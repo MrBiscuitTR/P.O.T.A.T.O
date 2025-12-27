@@ -1,6 +1,7 @@
 # P.O.T.A.T.O
-## Practical Omnipurpose Technical AI Tool Operator, aka P.O.T.A.T.O , is a smart and locally running vocal AI assistant that is capable of pretty much anything. It accepts all kinds of input including voice, It will undergo continuous development through the upcoming years. It is secure and private, overly so. Needs good hardware (24+ GB of VRAM and a fast GPU) to run efficiently. Uses SearX for web search. can be configured to use TOR. It is also capable of being your friend.
-  
+## Practical Omnipurpose Technical AI Tool Operator, aka P.O.T.A.T.O , is a smart and locally running vocal AI assistant that is capable of pretty much anything. It accepts all kinds of input including voice, images, code files, folders, pdfs... It is secure and private, overly so. Needs good hardware (24+ GB of VRAM and a fast GPU) to run efficiently. Uses SearX for web search. can be configured to use TOR. It is also capable of being your friend.
+
+P.O.T.A.T.O is a work in progress and will be updated regularly as the author finds the time to do so. It is a modular system that can be easily extended with new tools, utilities and functionalities. This project will undergo continuous development through the upcoming years.
     
 ### The core of P.O.T.A.T.O -- Practical Omnipurpose Technical AI Tool Operator
 - Uses ollama to interface with local LLMs.
