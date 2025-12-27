@@ -26,7 +26,8 @@ To install P.O.T.A.T.O,
 2. Navigate to the project directory.
 3. Rename `config.env.txt` to `.env`.
 4. Open `.env` and configure the necessary environment variables
-5. Install dependencies using pip and requirements.txt: ```pip install ```
+5. Install dependencies using pip and requirements.txt: ```pip install -r requirements.txt``` (run this on project root)
+6. Run `main.py`. The Web GUI runs at `http://localhost:8080`. If configured correctly, it should be listening the wake word. once heard, the program will start interacting with you until you stop it manually OR say a sleep word.
 
 ## Setting up the environment variables
 
