@@ -1,7 +1,8 @@
 # P.O.T.A.T.O
-### Practical Omnipurpose Technical AI Tool Operator, aka P.O.T.A.T.O , is a smart and locally running vocal AI assistant that is capable of pretty much anything. It accepts all kinds of input including voice, It will undergo continuous development through the upcoming years. It is secure and private, overly so. Needs good hardware (24+ GB of VRAM and a fast GPU) to run efficiently. Uses SearX for web search. can be configured to use TOR. It is also capable of being your friend.
-
-## The core of P.O.T.A.T.O -- Practical Omnipurpose Technical AI Tool Operator
+## Practical Omnipurpose Technical AI Tool Operator, aka P.O.T.A.T.O , is a smart and locally running vocal AI assistant that is capable of pretty much anything. It accepts all kinds of input including voice, It will undergo continuous development through the upcoming years. It is secure and private, overly so. Needs good hardware (24+ GB of VRAM and a fast GPU) to run efficiently. Uses SearX for web search. can be configured to use TOR. It is also capable of being your friend.
+  
+    
+### The core of P.O.T.A.T.O -- Practical Omnipurpose Technical AI Tool Operator
 - Uses ollama to interface with local LLMs.
 - Uses langchain to manage chains, agents, and memory.(?)
 - Uses a modular approach to add tools , utilities and functionalities. 
@@ -16,3 +17,17 @@
   optinally: 
   - ./components/memory_management/ 
   - ./components/agent_management/ 
+
+## Installation
+
+To install P.O.T.A.T.O,
+
+1. Clone this repository.
+2. Navigate to the project directory.
+3. Rename `config.env.txt` to `.env`.
+4. Open `.env` and configure the necessary environment variables
+5. Install dependencies using pip and requirements.txt: ```pip install ```
+
+## Setting up the environment variables
+
+You MUST rename the config.env.txt and remove the .txt at the end of it. then, start configuring the file, based on your setup. The fields have explanations next to them inside comments.
