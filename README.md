@@ -14,6 +14,7 @@ P.O.T.A.T.O is a work in progress and will be updated regularly as the author fi
   - ./components/local_tools/ 
   - ./components/dangerous_tools/
   - ./components/utilities/ 
+  - ./components/n8n/ 
   - ./webui/    
   optinally: 
   - ./components/memory_management/ 
