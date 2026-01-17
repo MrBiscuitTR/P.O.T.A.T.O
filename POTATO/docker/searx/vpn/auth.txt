@@ -1,0 +1,3 @@
+this is valid for most commercial vpns, ex: proton
+<your openvpn username here>
+<your openvpn password here>
