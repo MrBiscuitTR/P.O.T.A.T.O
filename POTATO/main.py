@@ -301,6 +301,45 @@ def main():
             print(f"Error: {e}")
             continue
 
+
+
+# TEST; UPDATE LATER
+# --- Define Tools Schema ---
+# You can extend this list based on your components
+tools_schema = [
+    # {
+    #     'type': 'function',
+    #     'function': {
+    #         'name': 'get_current_weather',
+    #         'description': 'Get the current weather for a location',
+    #         'parameters': {
+    #             'type': 'object',
+    #             'properties': {
+    #                 'location': {'type': 'string', 'description': 'The city and state, e.g. San Francisco, CA'},
+    #             },
+    #             'required': ['location'],
+    #         },
+    #     },
+    # },
+    # Add your other tools here (e.g., from components.visual_tools)
+]
+
+def simple_stream_test(messages_history, stream=False, think=False):
+    """
+    Unified chat function that handles both streaming and non-streaming.
+    """
+    response = chat(
+        # model="qwen2.5:32b", # Ensure model name matches your Ollama library
+        model="qwen3-vl:8b",
+        messages=messages_history,
+        # tools=tools_schema, # Inject tools
+        stream=stream,
+        think=think,
+        keep_alive=600,
+    )
+    return response
+
+
 if __name__ == "__main__":
     try:
         main()

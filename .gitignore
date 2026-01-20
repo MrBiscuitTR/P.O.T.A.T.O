@@ -194,3 +194,5 @@ POTATO/docker/searx/vpn/nl-free-146.protonvpn.tcp.ovpn
 *.obj
 /.vscode
 /.continue
+/POTATO/.data
+/POTATO/webui_v001

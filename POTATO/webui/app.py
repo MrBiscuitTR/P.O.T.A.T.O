@@ -1,125 +1,235 @@
-# POTATO/webui/app.py
-def run_flask_app():
-    from flask import Flask, render_template, request, jsonify
-    import threading
-    import sys
-    import os
-    import json
-    from glob import glob
-    import time
-    import POTATO.main as main
+import os
+import json
+import time
+import glob
+import uuid
+import psutil
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
+from werkzeug.utils import secure_filename
 
-    app = Flask(__name__, template_folder='templates', static_folder='static')
+# --- IMPORTS ---
+# We import your function, but we will call it with specific parameters
+from POTATO.main import simple_stream_test 
 
-    CHAT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.data', 'chats'))
-    os.makedirs(CHAT_DIR, exist_ok=True)
+# --- TOOL REGISTRY ---
+# Map the string names from LLM to actual python functions in your components
+TOOL_REGISTRY = {
+    # Example mapping:
+    # "generate_image": components.visual_tools.image_gen.generate,
+    "get_current_weather": lambda location: f"The weather in {location} is 22°C and Sunny.", # Mock for testing
+}
 
-    def load_chat(chat_id):
-        path = os.path.join(CHAT_DIR, f"{chat_id}.json")
+app = Flask(__name__)
+
+# --- CONFIGURATION ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SETTINGS_PATH = os.path.join(BASE_DIR, 'settings.json')
+DATA_DIR = os.path.join(BASE_DIR, '.data')
+USER_SETTINGS_PATH = os.path.join(DATA_DIR, 'usersettings.json')
+CHATS_DIR = os.path.join(DATA_DIR, 'chats')
+UPLOADS_DIR = os.path.join(DATA_DIR, 'uploads')
+
+os.makedirs(CHATS_DIR, exist_ok=True)
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(os.path.dirname(USER_SETTINGS_PATH), exist_ok=True)
+
+# --- HELPERS ---
+def load_settings():
+    settings = {}
+    try:
+        with open(SETTINGS_PATH, 'r') as f: settings = json.load(f)
+    except: pass
+    if os.path.exists(USER_SETTINGS_PATH):
+        try:
+            with open(USER_SETTINGS_PATH, 'r') as f: settings.update(json.load(f))
+        except: pass
+    return settings
+
+def save_user_setting(key, value):
+    current = {}
+    if os.path.exists(USER_SETTINGS_PATH):
+        try:
+            with open(USER_SETTINGS_PATH, 'r') as f: current = json.load(f)
+        except: pass
+    current[key] = value
+    with open(USER_SETTINGS_PATH, 'w') as f: json.dump(current, f, indent=4)
+
+def save_chat_session(session_id, messages, title=None):
+    path = os.path.join(CHATS_DIR, f"{session_id}.json")
+    if not title:
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return []
+            try:
+                with open(path, 'r') as f: title = json.load(f).get('title')
+            except: pass
+        if not title:
+            # Generate title from first user msg
+            for m in messages:
+                if m['role'] == 'user':
+                    title = m['content'][:30] + "..." if len(m['content']) > 30 else m['content']
+                    break
+            if not title: title = "New Session"
+            
+    data = {"id": session_id, "title": title, "last_updated": time.time(), "messages": messages}
+    with open(path, 'w') as f: json.dump(data, f, indent=4)
+    return data
 
-    def save_chat(chat_id, history):
-        path = os.path.join(CHAT_DIR, f"{chat_id}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
+def load_chat_session(session_id):
+    path = os.path.join(CHATS_DIR, f"{session_id}.json")
+    if os.path.exists(path):
+        with open(path, 'r') as f: return json.load(f)
+    return None
 
-    def list_chats():
-        chats = []
-        for file in glob(os.path.join(CHAT_DIR, "*.json")):
-            chat_id = os.path.splitext(os.path.basename(file))[0]
-            with open(file, "r", encoding="utf-8") as f:
-                history = json.load(f)
-                title = history[0]["content"] if history else chat_id
-                chats.append({"id": chat_id, "title": title})
-        return chats
+def get_all_chats(search_query=None):
+    files = glob.glob(os.path.join(CHATS_DIR, "*.json"))
+    chats = []
+    for p in files:
+        try:
+            with open(p, 'r') as f: data = json.load(f)
+            # Filter
+            if search_query:
+                q = search_query.lower()
+                in_content = any(q in m.get('content', '').lower() for m in data.get('messages', []))
+                if q not in data.get('title', '').lower() and not in_content:
+                    continue
+            chats.append(data)
+        except: pass
+    chats.sort(key=lambda x: x['last_updated'], reverse=True)
+    return chats
 
-    chat_history = []
-    current_chat_id = "default"
+# --- ROUTES ---
 
-    @app.route('/')
-    def index():
-        system_status = main.initial_system_status
-        chats = list_chats()
-        return render_template(
-            'index.html',
-            system_status=system_status,
-            chat_history=chat_history,
-            chats=chats,
-            current_chat_id=current_chat_id
-        )
+@app.route('/')
+def index():
+    return render_template('index.html')
 
-    @app.route('/api/system_info')
-    def api_system_info():
-        info = main.json_get_instant_system_info()
-        ram = info.get("ram", {})
-        gpus = info.get("gpus", [])
-        cpu = info.get("cpu", {})
-        filtered = {
-            "ram": {
-                "available_gb": ram.get("available_gb"),
-                "total_gb": ram.get("total_gb"),
-                "usage_percent": ram.get("usage_percent")
-            },
-            "gpus": [
-                {
-                    "id_name": f'{gpu.get("id")}: {gpu.get("name")}',
-                    "load_percent": gpu.get("load_percent"),
-                    "memoryFree_MB": gpu.get("memoryFree_MB"),
-                    "memoryTotal_MB": gpu.get("memoryTotal_MB"),
-                    "temperature_C": gpu.get("temperature_C")
-                } for gpu in gpus
-            ],
-            "cpu": {
-                "usage_percent": cpu.get("usage_percent")
-            }
-        }
-        return jsonify(filtered)
-
-    @app.route('/api/model_info')
-    def api_model_info():
-        return jsonify({
-            "name": "Ollama LLM",
-            "version": "1.0",
-            "status": "Ready",
-            "context_length": 4096,
-            "other": {}
-        })
-
-    @app.route('/api/chats', methods=['GET'])
-    def api_list_chats():
-        return jsonify(list_chats())
-
-    @app.route('/api/chats/<chat_id>', methods=['GET'])
-    def api_get_chat(chat_id):
-        return jsonify(load_chat(chat_id))
-
-    @app.route('/api/chats/new', methods=['POST'])
-    def api_new_chat():
-        nonlocal chat_history, current_chat_id
-        chat_id = str(int(time.time()))
-        chat_history = []
-        current_chat_id = chat_id
-        save_chat(chat_id, chat_history)
-        return jsonify({"id": chat_id})
-
-    @app.route('/api/chat', methods=['POST'])
-    def api_chat():
-        nonlocal chat_history, current_chat_id
+@app.route('/api/settings', methods=['GET', 'POST'])
+def handle_settings():
+    if request.method == 'POST':
         data = request.json
-        user_message = data.get('message', '')
-        chat_id = data.get('chat_id', current_chat_id)
-        chat_history = load_chat(chat_id)
-        ai_response = f"Echo: {user_message}"
-        chat_history.append({"role": "user", "content": user_message})
-        chat_history.append({"role": "ai", "content": ai_response})
-        save_chat(chat_id, chat_history)
-        current_chat_id = chat_id
-        return jsonify({"response": ai_response, "tokens": len(user_message.split()) + 2, "chat_history": chat_history})
+        for k, v in data.items(): save_user_setting(k, v)
+        return jsonify({"status": "success"})
+    return jsonify(load_settings())
 
-    app.run(host='localhost', port=3169 , debug=False, use_reloader=True)
+@app.route('/api/system_stats')
+def system_stats():
+    cpu = psutil.cpu_percent(interval=None)
+    ram = psutil.virtual_memory().percent
+    gpu, gpu_temp = 0, 0
+    try:
+        import GPUtil
+        gpus = GPUtil.getGPUs()
+        if gpus:
+            gpu = gpus[0].load * 100
+            gpu_temp = gpus[0].temperature
+    except: pass
+    return jsonify({"cpu": cpu, "ram": ram, "gpu": gpu, "gpu_temp": gpu_temp})
 
-if __name__ == "__main__":
-    run_flask_app()
+@app.route('/api/chats', methods=['GET'])
+def list_chats_route():
+    return jsonify(get_all_chats(request.args.get('search')))
+
+@app.route('/api/chats/<session_id>', methods=['GET'])
+def load_chat_route(session_id):
+    c = load_chat_session(session_id)
+    return jsonify(c) if c else (jsonify({"error": "Not found"}), 404)
+
+# --- UPLOAD ROUTES ---
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    if 'file' not in request.files: return jsonify({"error": "No file"}), 400
+    file = request.files['file']
+    if file.filename == '': return jsonify({"error": "No filename"}), 400
+    filename = secure_filename(file.filename)
+    path = os.path.join(UPLOADS_DIR, filename)
+    file.save(path)
+    return jsonify({"path": path, "filename": filename})
+
+@app.route('/api/transcribe', methods=['POST'])
+def transcribe():
+    # Placeholder for Whisper integration
+    if 'audio' not in request.files: return jsonify({"error": "No audio"}), 400
+    # Save audio, call Whisper, return text
+    return jsonify({"text": "[Voice Input Placeholder]"})
+
+# --- STREAMING CHAT ROUTE ---
+@app.route('/api/chat_stream', methods=['POST'])
+def chat_stream():
+    data = request.json
+    user_input = data.get('message')
+    session_id = data.get('session_id')
+    rag_enabled = data.get('rag_enabled', False)
+    rag_folder = data.get('context_folder')
+    
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        history = []
+    else:
+        existing = load_chat_session(session_id)
+        history = existing['messages'] if existing else []
+
+    # Handle RAG Context Injection
+    if rag_enabled and rag_folder:
+        user_input = f"[SYSTEM: Accessing RAG Context from {rag_folder}]\n{user_input}"
+
+    history.append({"role": "user", "content": user_input})
+
+    def generate():
+        # Call the imported function with stream=True
+        # This assumes your updated POTATO.main.simple_stream_test supports receiving 'tools' kwarg implicitly
+        # or we rely on it being hardcoded there. 
+        # For this to work dynamically with tool handling logic as per your docs snippet:
+        
+        # We start the stream
+        stream = simple_stream_test(history, stream=True, think=False)
+        
+        accumulated_content = ""
+        accumulated_thinking = ""
+        
+        for chunk in stream:
+            # 1. Handle Thinking
+            if 'thinking' in chunk.get('message', {}): # Assuming model supports it
+                think_bit = chunk['message']['thinking']
+                accumulated_thinking += think_bit
+                yield f"data: {json.dumps({'thinking': think_bit})}\n\n"
+            
+            # 2. Handle Content
+            if 'content' in chunk['message']:
+                content_bit = chunk['message']['content']
+                accumulated_content += content_bit
+                yield f"data: {json.dumps({'content': content_bit})}\n\n"
+            
+            # 3. Handle Tool Calls (Accumulation logic needed here if streamed)
+            if 'tool_calls' in chunk['message']:
+                tool_calls = chunk['message']['tool_calls']
+                for tool in tool_calls:
+                    fn_name = tool.function.name
+                    args = tool.function.arguments
+                    yield f"data: {json.dumps({'tool_status': f'Calling {fn_name}...'})}\n\n"
+                    
+                    # Execute Tool
+                    if fn_name in TOOL_REGISTRY:
+                        try:
+                            # Parse args if they are JSON string, otherwise use as dict
+                            if isinstance(args, str): tool_args = json.loads(args)
+                            else: tool_args = args
+                                
+                            result = TOOL_REGISTRY[fn_name](**tool_args)
+                            
+                            # For simple streaming, we just notify UI of result
+                            # In a real loop, you'd feed this back to LLM.
+                            yield f"data: {json.dumps({'tool_result': str(result)})}\n\n"
+                            
+                        except Exception as e:
+                            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+        # Save History
+        history.append({"role": "assistant", "content": accumulated_content})
+        save_chat_session(session_id, history)
+        
+        # End Stream
+        yield f"data: {json.dumps({'session_id': session_id, 'done': True})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=1234, debug=True)

@@ -1,221 +1,243 @@
-// --- Splitter logic ---
-const leftPanel = document.getElementById('left-panel');
-const splitter = document.getElementById('splitter');
-let isDragging = false;
+let currentSessionId = null;
+let mediaRecorder;
+let audioChunks = [];
 
-splitter.addEventListener('mousedown', function(e) {
-    isDragging = true;
-    document.body.style.cursor = 'ew-resize';
+document.addEventListener('DOMContentLoaded', () => {
+    updateStats();
+    loadChatList();
+    setInterval(updateStats, 2000);
+    document.querySelector('.search-box input').addEventListener('input', (e) => loadChatList(e.target.value));
 });
 
-document.addEventListener('mousemove', function(e) {
-    if (!isDragging) return;
-    let newWidth = e.clientX;
-    if (newWidth < 200) newWidth = 200;
-    if (newWidth > 600) newWidth = 600;
-    leftPanel.style.width = newWidth + 'px';
-    splitter.style.left = newWidth + 'px';
-});
-
-document.addEventListener('mouseup', function(e) {
-    isDragging = false;
-    document.body.style.cursor = '';
-});
-
-// --- System/model info human readable ---
-function progressBar(percent, color, text) {
-    // Use flexbox for alignment, and avoid absolute positioning
-    return `
-    <div class="progress-bar" style="display:flex;align-items:center;position:relative;">
-        <div class="progress-bar-inner" style="width:${percent}%;background:${color};"></div>
-        <span class="progress-bar-label" style="position:absolute;left:12px;top:0;line-height:18px;">${text}</span>
-    </div>`;
+function switchTab(tabId) {
+    document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
+    document.getElementById(tabId + '-view').classList.add('active');
+    const map = {'chat': 0, 'browser': 1, 'settings': 2};
+    if(map[tabId] !== undefined) document.querySelectorAll('.nav-btn')[map[tabId]].classList.add('active');
+    if(tabId === 'settings') loadSettings();
 }
 
-function tempColor(temp) {
-    if (temp < 50) return "#4caf50";
-    if (temp < 65) return "#ff9800";
-    return "#f44336";
-}
+function toggleVoice() { document.getElementById('voice-overlay').classList.toggle('hidden'); }
+function toggleRightSidebar() { document.getElementById('right-sidebar').classList.toggle('open'); }
 
-async function fetchSystemInfo() {
-    const res = await fetch('/api/system_info');
-    const data = await res.json();
-    let ram = data.ram || {};
-    let cpu = data.cpu || {};
-    let gpus = data.gpus || [];
-
-    let ramBar = progressBar(
-        ram.usage_percent || 0,
-        "#2196f3",
-        `${ram.available_gb ?? "?"} GB / ${ram.total_gb ?? "?"} GB (${ram.usage_percent ?? "?"}%)`
-    );
-    let cpuBar = progressBar(
-        cpu.usage_percent || 0,
-        "#9c27b0",
-        `${cpu.usage_percent ?? "?"}%`
-    );
-    let gpuHtml = "";
-    if (gpus.length) {
-        gpuHtml = gpus.map(gpu => `
-            <div style="margin-bottom:8px;">
-                <div><b>${gpu.id_name}</b></div>
-                <div>Load: ${progressBar(gpu.load_percent || 0, "#03a9f4", `${gpu.load_percent ?? "?"}%`)}</div>
-                <div>VRAM: ${progressBar(
-                    gpu.memoryTotal_MB ? ((gpu.memoryTotal_MB - gpu.memoryFree_MB) / gpu.memoryTotal_MB * 100) : 0,
-                    "#8bc34a",
-                    `${gpu.memoryFree_MB ?? "?"}MB free / ${gpu.memoryTotal_MB ?? "?"}MB`
-                )}</div>
-                <div>Temp: <span style="color:${tempColor(gpu.temperature_C)}">${gpu.temperature_C ?? "?"}°C</span></div>
-            </div>
-        `).join("");
-    }
-
-    document.getElementById('system-info').innerHTML =
-        `<div style="margin-bottom:8px;"><b>RAM:</b>${ramBar}</div>
-         <div style="margin-bottom:8px;"><b>CPU Usage:</b>${cpuBar}</div>
-         <div><b>GPUs:</b>${gpuHtml || "<div style='color:#888;'>No GPU detected</div>"}</div>`;
-}
-
-async function fetchModelInfo() {
-    const res = await fetch('/api/model_info');
-    const data = await res.json();
-    document.getElementById('model-info').innerHTML =
-        `<b>Name:</b> ${data.name}<br>
-         <b>Version:</b> ${data.version}<br>
-         <b>Status:</b> ${data.status}<br>
-         <b>Context Length:</b> ${data.context_length}`;
-}
-
-fetchSystemInfo();
-fetchModelInfo();
-setInterval(fetchSystemInfo, 2000);
-
-// --- Chat navbar logic ---
-const chatListDiv = document.getElementById('chat-list');
-const newChatBtn = document.getElementById('new-chat-btn');
-const chatSearch = document.getElementById('chat-search');
-let currentChatId = window.current_chat_id || "default";
-let chats = window.chats || [];
-let chatHistories = {};
-
-function renderChatList(chats, query = "") {
-    chatListDiv.innerHTML = '';
-    for (const chat of chats) {
-        if (query && !chat.title.toLowerCase().includes(query.toLowerCase()) && !chat.id.includes(query)) continue;
-        const btn = document.createElement('button');
-        btn.textContent = chat.title || chat.id;
-        btn.className = 'chat-list-item' + (chat.id === currentChatId ? ' active' : '');
-        btn.onclick = () => switchChat(chat.id);
-        chatListDiv.appendChild(btn);
-    }
-}
-
-async function updateChatList() {
-    const res = await fetch('/api/chats');
-    chats = await res.json();
-    renderChatList(chats, chatSearch.value);
-}
-
-async function switchChat(chatId) {
-    currentChatId = chatId;
-    const res = await fetch(`/api/chats/${chatId}`);
-    const history = await res.json();
-    window.chat_history = history;
-    renderChatHistory(window.chat_history);
-    renderChatList(chats, chatSearch.value);
-}
-
-newChatBtn.addEventListener('click', async () => {
-    const res = await fetch('/api/chats/new', {method: 'POST'});
-    const data = await res.json();
-    currentChatId = data.id;
-    window.chat_history = [];
-    await updateChatList();
-    renderChatHistory(window.chat_history);
-    renderChatList(chats, chatSearch.value);
-});
-
-chatSearch.addEventListener('input', async () => {
-    renderChatList(chats, chatSearch.value);
-});
-
-// --- Chat logic ---
-const chatHistoryDiv = document.getElementById('chat-history');
-const chatInput = document.getElementById('chat-input');
-const sendBtn = document.getElementById('send-btn');
-const stopBtn = document.getElementById('stop-btn');
-const tokensDisplay = document.getElementById('tokens-display');
-const attachBtn = document.getElementById('attach-btn');
-const fileInput = document.getElementById('file-input');
-const voiceBtn = document.getElementById('voice-btn');
-
-let stopRequested = false;
-
-function renderChatHistory(history) {
-    chatHistoryDiv.innerHTML = '';
-    for (const msg of history) {
-        const div = document.createElement('div');
-        div.className = 'message ' + msg.role;
-        div.textContent = msg.content;
-        chatHistoryDiv.appendChild(div);
-    }
-    chatHistoryDiv.scrollTop = chatHistoryDiv.scrollHeight;
-}
-
-window.addEventListener('DOMContentLoaded', () => {
-    renderChatList(chats);
-    renderChatHistory(window.chat_history);
-});
-
+// --- CHAT LOGIC WITH STREAMING ---
 async function sendMessage() {
-    const message = chatInput.value.trim();
-    if (!message) return;
-    stopRequested = false;
-    sendBtn.disabled = true;
-    stopBtn.disabled = false;
-    // Add user message to chat
-    window.chat_history = window.chat_history || [];
-    window.chat_history.push({role: 'user', content: message});
-    renderChatHistory(window.chat_history);
+    const input = document.getElementById('chat-input');
+    const msg = input.value;
+    if(!msg.trim()) return;
 
-    const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({message, chat_id: currentChatId})
-    });
-    const data = await res.json();
-    if (!stopRequested) {
-        window.chat_history = data.chat_history;
-        renderChatHistory(window.chat_history);
-        tokensDisplay.textContent = `Tokens: ${data.tokens}`;
-        await updateChatList(); // update chat list titles if needed
+    appendMessage(msg, 'user');
+    input.value = '';
+
+    // Prepare Streaming Request
+    const ragEnabled = document.getElementById('rag-toggle')?.checked || false;
+    const ragFolder = document.getElementById('rag-folder')?.value || '';
+
+    // Create Bot Message Placeholder
+    const botMsgId = 'msg-' + Date.now();
+    createBotPlaceholder(botMsgId);
+
+    try {
+        const response = await fetch('/api/chat_stream', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                message: msg,
+                session_id: currentSessionId,
+                rag_enabled: ragEnabled,
+                context_folder: ragFolder
+            })
+        });
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, {stream: true});
+            const lines = chunk.split('\n\n');
+            
+            for (const line of lines) {
+                if(line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.replace('data: ', ''));
+                        updateBotMessage(botMsgId, data);
+                    } catch(e) { console.error(e); }
+                }
+            }
+        }
+    } catch (err) {
+        console.error(err);
+        appendMessage("ERROR: CONNECTION LOST", 'system');
     }
-    chatInput.value = '';
-    sendBtn.disabled = false;
-    stopBtn.disabled = true;
 }
 
-sendBtn.addEventListener('click', sendMessage);
-chatInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') sendMessage();
-});
-stopBtn.addEventListener('click', () => {
-    stopRequested = true;
-    sendBtn.disabled = false;
-    stopBtn.disabled = true;
-});
+function createBotPlaceholder(id) {
+    const win = document.getElementById('chat-window');
+    const div = document.createElement('div');
+    div.className = 'msg bot';
+    div.id = id;
+    
+    // Thinking block (hidden by default)
+    const thinking = document.createElement('div');
+    thinking.className = 'thinking-block';
+    div.appendChild(thinking);
+    
+    // Content block
+    const content = document.createElement('div');
+    content.className = 'msg-content';
+    div.appendChild(content);
 
-// File attach
-attachBtn.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', () => {
-    if (fileInput.files.length > 0) {
-        alert('File attached: ' + fileInput.files[0].name);
-        // Implement file upload logic as needed
+    win.appendChild(div);
+    win.scrollTop = win.scrollHeight;
+}
+
+function updateBotMessage(id, data) {
+    const msgDiv = document.getElementById(id);
+    if(!msgDiv) return;
+    
+    if(data.thinking) {
+        const t = msgDiv.querySelector('.thinking-block');
+        t.innerText += data.thinking;
+        t.classList.add('active');
     }
-});
+    if(data.content) {
+        msgDiv.querySelector('.msg-content').innerText += data.content;
+    }
+    if(data.session_id) {
+        currentSessionId = data.session_id;
+        loadChatList(); // Refresh sidebar order
+    }
+    
+    const win = document.getElementById('chat-window');
+    win.scrollTop = win.scrollHeight;
+}
 
-// Voice mode (stub)
-voiceBtn.addEventListener('click', () => {
-    alert('Voice mode not implemented yet.');
-});
+function appendMessage(text, type) {
+    const win = document.getElementById('chat-window');
+    const div = document.createElement('div');
+    div.className = `msg ${type}`;
+    div.innerText = text; 
+    win.appendChild(div);
+    win.scrollTop = win.scrollHeight;
+}
+
+// --- FILE / VOICE HANDLERS ---
+function uploadFile(input) {
+    const file = input.files[0];
+    const fd = new FormData(); fd.append('file', file);
+    fetch('/api/upload', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{
+        document.getElementById('chat-input').value += ` [FILE: ${d.filename}] `;
+    });
+}
+
+function uploadFolder(input) {
+    // Only captures first file path for RAG context mock
+    if(input.files.length > 0) {
+        const path = input.files[0].webkitRelativePath.split('/')[0];
+        document.getElementById('rag-folder').value = path;
+        document.getElementById('rag-toggle').checked = true;
+        toggleRightSidebar(); // Open sidebar to show settings
+    }
+}
+
+function startRecording() {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+        mediaRecorder = new MediaRecorder(stream);
+        audioChunks = [];
+        mediaRecorder.start();
+        mediaRecorder.addEventListener("dataavailable", e => audioChunks.push(e.data));
+    });
+}
+
+function stopRecording() {
+    if(mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        mediaRecorder.addEventListener("stop", () => {
+            const blob = new Blob(audioChunks, { type: 'audio/wav' });
+            const fd = new FormData(); fd.append("audio", blob, "in.wav");
+            fetch('/api/transcribe', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{
+                document.getElementById('chat-input').value += d.text + " ";
+            });
+        });
+    }
+}
+
+// --- STANDARD FUNCTIONS (Stats, Load Chats, Settings - Kept from old) ---
+function loadChatList(query='') {
+    const url = query ? `/api/chats?search=${encodeURIComponent(query)}` : '/api/chats';
+    fetch(url).then(r=>r.json()).then(chats=>{
+        const list = document.querySelector('.chat-list');
+        list.innerHTML = '<li style="color:var(--primary-color)" onclick="startNewChat()"><i class="fa-solid fa-plus"></i> NEW_SESSION</li>';
+        chats.forEach(c => {
+            const li = document.createElement('li');
+            li.innerText = c.title;
+            if(c.id === currentSessionId) li.classList.add('active');
+            li.onclick = () => loadSession(c.id);
+            list.appendChild(li);
+        });
+    });
+}
+
+function loadSession(id) {
+    currentSessionId = id;
+    fetch(`/api/chats/${id}`).then(r=>r.json()).then(d=>{
+        document.getElementById('chat-window').innerHTML = '';
+        d.messages.forEach(m => {
+            if(m.role === 'user') appendMessage(m.content, 'user');
+            else {
+                createBotPlaceholder('hist-'+Date.now()); // simplified logic for history
+                const els = document.querySelectorAll('.msg.bot');
+                els[els.length-1].querySelector('.msg-content').innerText = m.content;
+            }
+        });
+        loadChatList();
+    });
+}
+
+function startNewChat() {
+    currentSessionId = null;
+    document.getElementById('chat-window').innerHTML = '<div class="msg system">Initialization Complete. Systems Nominal.</div>';
+    loadChatList();
+}
+
+function updateStats() {
+    fetch('/api/system_stats').then(r=>r.json()).then(d=>{
+        setBar('cpu', d.cpu); setBar('ram', d.ram); setBar('gpu', d.gpu);
+        document.getElementById('temp-val').innerText = `${Math.round(d.gpu_temp)}°C`;
+    });
+}
+
+function setBar(id, val) {
+    const bar = document.getElementById(`${id}-bar`);
+    const txt = document.getElementById(`${id}-val`);
+    if(bar) { bar.style.width=`${val}%`; txt.innerText=`${Math.round(val)}%`; }
+}
+
+function loadSettings() {
+    fetch('/api/settings').then(r=>r.json()).then(s=>{
+        const c = document.getElementById('settings-container'); c.innerHTML='';
+        for(const [k,v] of Object.entries(s)) {
+            const d = document.createElement('div'); d.className='setting-card';
+            d.innerHTML = `<label>${k.toUpperCase()}</label>`;
+            const i = document.createElement('input'); i.dataset.key=k;
+            if(typeof v==='boolean'){ i.type='checkbox'; i.checked=v; }
+            else { i.value=v; }
+            d.appendChild(i); c.appendChild(d);
+        }
+    });
+}
+
+function saveSettings() {
+    const data={};
+    document.querySelectorAll('#settings-container input').forEach(i=>{
+        data[i.dataset.key] = i.type==='checkbox'?i.checked:i.value;
+    });
+    fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)})
+    .then(()=>alert("SAVED"));
+}
+
+document.getElementById('chat-input').addEventListener('keypress', e => { if(e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
