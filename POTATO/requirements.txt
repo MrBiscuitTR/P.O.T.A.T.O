@@ -1,0 +1,16 @@
+flask
+ollama
+cputil
+gputil
+threading
+os
+requests
+json
+diffusers
+torch
+pdf2image
+datetime
+dotenv
+bs4
+re
+urllib

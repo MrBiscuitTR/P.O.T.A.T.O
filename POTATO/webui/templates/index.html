@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>P.O.T.A.T.O AI Chat</title>
+    <link rel="stylesheet" type="" href="/static/globals.css">
+</head>
+<body>
+<div id="split-container">
+    <div id="left-panel">
+        <div id="chat-navbar">
+            <button id="new-chat-btn" title="New Chat">🗎</button>
+            <input type="text" id="chat-search" placeholder="Search chats...">
+            <div id="chat-list"></div>
+        </div>
+        <div id="model-info-panel">
+            <h3>Model Info</h3>
+            <div id="model-info"></div>
+        </div>
+        <div id="system-info-panel">
+            <h3>System Info</h3>
+            <div id="system-info"></div>
+        </div>
+    </div>
+    <div id="right-panel">
+        <div id="chat-history">
+            <!-- Chat messages will be rendered here -->
+        </div>
+        <div id="chat-controls">
+            <input type="file" id="file-input" style="display:none;">
+            <button id="attach-btn">📎</button>
+            <button id="voice-btn">🎤</button>
+            <input type="text" id="chat-input" placeholder="Type your message..." autocomplete="off">
+            <button id="send-btn">Send</button>
+            <button id="stop-btn">Stop</button>
+            <span id="tokens-display">Tokens: 0</span>
+        </div>
+    </div>
+    <div id="splitter"></div>
+</div>
+<script>
+    window.chat_history = {{ chat_history|tojson|safe }};
+    window.chats = {{ chats|tojson|safe }};
+    window.current_chat_id = {{ current_chat_id|tojson|safe }};
+</script>
+<script src="/static/script.js"></script>
+</body>
+</html>

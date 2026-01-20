@@ -1,0 +1,121 @@
+use_default_settings: true
+
+general:
+  debug: false
+  instance_name: "PrivateSearXNG"
+  brand:
+    title: "PrivateSearXNG"
+    subtitle: "Minimal private search with images, videos & Startpage"
+    description: "Highly private SearXNG instance – Startpage, images, videos, music – no Tor, optimized for AI agents"
+
+search:
+  safe_search: 0
+  autocomplete: "qwant"
+  method: "GET"
+  formats:
+    - html
+    - json
+
+server:
+  secret_key: ChangeMePlease  # ← CHANGE THIS! make it long, strong, unguessable. you dont need to write this down.
+  limiter: true
+  bind_address: "0.0.0.0"
+  port: 8080
+
+outgoing:
+  request_timeout: 10.0
+  # No proxies/Tor → avoids blocks
+  # SearXNG uses modern, randomized User-Agents per engine
+
+# Enable the categories you want
+categories_as_tabs:
+  general: true
+  images: true
+  videos: true
+  music: false
+  social media: true   # disable for privacy
+  it: true
+  files: true
+  news: true
+
+engines:
+  # General search
+  - name: startpage
+    shortcut: sp
+    timeout: 8.0
+    disabled: false
+  - name: google
+    shortcut: g
+    timeout: 8.0
+  - name: bing
+    shortcut: b
+    timeout: 8.0
+  - name: duckduckgo
+    shortcut: ddg
+    timeout: 12.0
+  - name: brave
+    shortcut: br
+    timeout: 8.0
+
+  # Scholar / Academic
+  - name: "google scholar"
+    shortcut: gs
+    timeout: 12.0
+    engine: google_scholar
+  - name: pubmed
+    shortcut: pm
+    timeout: 12.0
+    engine: pubmed
+  - name: arxiv
+    shortcut: ax
+    timeout: 12.0
+    engine: arxiv
+  - name: jstor
+    shortcut: js
+    timeout: 12.0
+    engine: jstor
+
+  # Images (enabled)
+  - name: duckduckgo images
+    shortcut: ddgimg
+    timeout: 10.0
+    engine: duckduckgo_images
+    disabled: false
+  - name: startpage images
+    shortcut: spimg
+    timeout: 10.0
+    engine: startpage_images
+    disabled: false
+  - name: brave images
+    shortcut: brimg
+    timeout: 10.0
+    engine: brave_images
+    disabled: false
+
+  # Videos (enabled)
+  - name: duckduckgo videos
+    shortcut: ddgvid
+    timeout: 12.0
+    engine: duckduckgo_videos
+    disabled: false
+  - name: youtube
+    shortcut: yt
+    timeout: 12.0
+    engine: youtube
+    disabled: false
+
+  # Other useful ones
+  - name: reddit
+    shortcut: r
+    timeout: 8.0
+  - name: stackoverflow
+    shortcut: so
+    timeout: 6.0
+    engine: stackoverflow
+  - name: twitter
+    shortcut: t
+    timeout: 8.0
+    engine: twitter
+
+ui:
+  static_use_hash: true  # reduces fingerprinting

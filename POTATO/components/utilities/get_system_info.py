@@ -1,5 +1,9 @@
 import GPUtil
 from torch import cuda as cuda
+import json
+import platform
+import psutil
+import os
 
 def get_all_system_info():
     print("Gathering system information...")
@@ -89,62 +93,92 @@ def get_gpu_memory_usage():
     print("-"*40)
     print("GPU check complete.")
 
+# def json_get_instant_system_info():
+#     import platform
+#     system_info = {}
+
+#     # CPU info
+#     try:
+#         import psutil
+#         cpu_count_logical = psutil.cpu_count(logical=True)
+#         cpu_count_physical = psutil.cpu_count(logical=False)
+#         cpu_percent = psutil.cpu_percent(interval=0.5)
+#         cpu_model = platform.processor()
+#         system_info["cpu"] = {
+#             "model": cpu_model,
+#             "physical_cores": cpu_count_physical,
+#             "logical_cores": cpu_count_logical,
+#             "usage_percent": cpu_percent
+#         }
+#     except ImportError:
+#         system_info["cpu"] = "psutil not available"
+
+#     # RAM info
+#     try:
+#         import psutil
+#         virtual_mem = psutil.virtual_memory()
+#         system_info["ram"] = {
+#             "total_gb": round(virtual_mem.total / (1024 ** 3), 2),
+#             "available_gb": round(virtual_mem.available / (1024 ** 3), 2),
+#             "used_gb": round(virtual_mem.used / (1024 ** 3), 2),
+#             "usage_percent": virtual_mem.percent
+#         }
+#     except ImportError:
+#         system_info["ram"] = "psutil not available"
+
+#     # GPU info
+#     gpu_info_list = []
+#     try:
+#         gpus = GPUtil.getGPUs()
+#         for gpu in gpus:
+#             gpu_info = {
+#                 "id": gpu.id,
+#                 "name": gpu.name,
+#                 "uuid": gpu.uuid,
+#                 "driver": gpu.driver,
+#                 "memoryTotal_MB": gpu.memoryTotal,
+#                 "memoryUsed_MB": gpu.memoryUsed,
+#                 "memoryFree_MB": gpu.memoryFree,
+#                 "load_percent": gpu.load * 100,
+#                 "temperature_C": gpu.temperature,
+#                 # "display_mode": gpu.display_mode,
+#                 "display_active": gpu.display_active
+#             }
+#             gpu_info_list.append(gpu_info)
+#     except Exception as e:
+#         gpu_info_list.append({"error": f"Error retrieving GPU info: {e}"})
+#     system_info["gpus"] = gpu_info_list
+
+#     return system_info
+
 def json_get_instant_system_info():
-    import platform
-    system_info = {}
-
-    # CPU info
-    try:
-        import psutil
-        cpu_count_logical = psutil.cpu_count(logical=True)
-        cpu_count_physical = psutil.cpu_count(logical=False)
-        cpu_percent = psutil.cpu_percent(interval=0.5)
-        cpu_model = platform.processor()
-        system_info["cpu"] = {
-            "model": cpu_model,
-            "physical_cores": cpu_count_physical,
-            "logical_cores": cpu_count_logical,
-            "usage_percent": cpu_percent
-        }
-    except ImportError:
-        system_info["cpu"] = "psutil not available"
-
-    # RAM info
-    try:
-        import psutil
-        virtual_mem = psutil.virtual_memory()
-        system_info["ram"] = {
-            "total_gb": round(virtual_mem.total / (1024 ** 3), 2),
-            "available_gb": round(virtual_mem.available / (1024 ** 3), 2),
-            "used_gb": round(virtual_mem.used / (1024 ** 3), 2),
-            "usage_percent": virtual_mem.percent
-        }
-    except ImportError:
-        system_info["ram"] = "psutil not available"
-
-    # GPU info
-    gpu_info_list = []
-    try:
-        gpus = GPUtil.getGPUs()
-        for gpu in gpus:
-            gpu_info = {
-                "id": gpu.id,
-                "name": gpu.name,
-                "uuid": gpu.uuid,
-                "driver": gpu.driver,
-                "memoryTotal_MB": gpu.memoryTotal,
-                "memoryUsed_MB": gpu.memoryUsed,
-                "memoryFree_MB": gpu.memoryFree,
-                "load_percent": gpu.load * 100,
-                "temperature_C": gpu.temperature,
-                # "display_mode": gpu.display_mode,
-                "display_active": gpu.display_active
-            }
-            gpu_info_list.append(gpu_info)
-    except Exception as e:
-        gpu_info_list.append({"error": f"Error retrieving GPU info: {e}"})
-    system_info["gpus"] = gpu_info_list
-
+    """
+    Get instant system information in JSON format.
+    
+    Returns:
+        dict: System information including OS, CPU, memory, disk, and network details
+    """
+    # Get system information
+    system_info = {
+        "platform": platform.system(),
+        "platform_version": platform.version(),
+        "platform_release": platform.release(),
+        "processor": platform.processor(),
+        "machine": platform.machine(),
+        "architecture": platform.architecture()[0],
+        "cpu_count": os.cpu_count(),
+        "cpu_percent": psutil.cpu_percent(interval=1),
+        "memory_total": psutil.virtual_memory().total,
+        "memory_available": psutil.virtual_memory().available,
+        "memory_percent": psutil.virtual_memory().percent,
+        "disk_total": psutil.disk_usage('/').total,
+        "disk_available": psutil.disk_usage('/').free,
+        "disk_percent": psutil.disk_usage('/').percent,
+        "network_connections": len(psutil.net_connections()),
+        "python_version": platform.python_version(),
+        "hostname": platform.node()
+    }
+    
     return system_info
 
 if __name__ == "__main__":

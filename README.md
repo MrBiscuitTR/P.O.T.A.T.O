@@ -8,6 +8,7 @@ P.O.T.A.T.O is a work in progress and will be updated regularly as the author fi
 - Uses langchain to manage chains, agents, and memory.(?)
 - Uses a modular approach to add tools , utilities and functionalities. 
 - Components :
+  - ./components/code_tools/
   - ./components/vocal_tools/  
   - ./components/visual_tools/ 
   - ./components/online_tools/ 
@@ -16,20 +17,19 @@ P.O.T.A.T.O is a work in progress and will be updated regularly as the author fi
   - ./components/utilities/ 
   - ./components/n8n/ 
   - ./webui/    
-  optinally: 
-  - ./components/memory_management/ 
-  - ./components/agent_management/ 
+  optionally: 
+  - ./components/agent/*agentic tools, orchestration, state management etc.
 
 ## Installation
 
 To install P.O.T.A.T.O,
 
 1. Clone this repository.
-2. Navigate to the project directory.
+2. Navigate to the project directory using ```cd <path/to/P.O.T.A.T.O>```.
 3. Rename `config.env.txt` to `.env`.
-4. Open `.env` and configure the necessary environment variables
+4. Open `.env` and configure the necessary environment variables.
 5. Install dependencies using pip and requirements.txt: ```pip install -r requirements.txt``` (run this on project root)
-6. Run `main.py`. The Web GUI runs at `http://localhost:8080`. If configured correctly, it should be listening the wake word. once heard, the program will start interacting with you until you stop it manually OR say a sleep word.
+6. Run `main.py`. The Web GUI runs at `http://localhost:1234` by default. If configured correctly, it should be listening the wake word. once heard, the program will start interacting with you until you stop it manually OR say a sleep word.
 
 ## Setting up the environment variables
 

@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>OBJ Viewer</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+
+<div style="position:fixed;top:10px;left:10px;z-index:10;background:#222;padding:10px;border-radius:8px;color:#fff;">
+    <label for="objSelector">Select OBJ file:</label>
+    <select id="objSelector"></select>
+</div>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+import { OrbitControls } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js";
+import { OBJLoader } from "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/loaders/OBJLoader.js";
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x202020);
+
+const camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    1000
+);
+camera.position.set(0, 2, 5);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+/* Lighting (Blender-like) */
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+
+const light = new THREE.DirectionalLight(0xffffff, 1);
+light.position.set(5, 10, 5);
+scene.add(light);
+
+/* Controls (mouse like Blender) */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.screenSpacePanning = true;
+
+/* Load OBJ */
+const loader = new OBJLoader();
+let currentObj = null;
+
+function loadOBJ(filename) {
+    if (currentObj) {
+        scene.remove(currentObj);
+        currentObj.traverse((child) => {
+            if (child.geometry) child.geometry.dispose();
+            if (child.material) child.material.dispose();
+        });
+        currentObj = null;
+    }
+    loader.load(
+        `/models/${filename}`,
+        (obj) => {
+            obj.traverse((child) => {
+                if (child.isMesh) {
+                    child.material = new THREE.MeshStandardMaterial({ color: 0xcccccc });
+                }
+            });
+            scene.add(obj);
+            currentObj = obj;
+        }
+    );
+}
+
+
+const selector = document.getElementById('objSelector');
+
+// Fetch OBJ file list dynamically
+async function fetchObjFiles() {
+    const res = await fetch('/models/list');
+    if (!res.ok) return [];
+    return await res.json();
+}
+
+fetchObjFiles().then(files => {
+    selector.innerHTML = '';
+    files.forEach(f => {
+        const opt = document.createElement('option');
+        opt.value = f;
+        opt.textContent = f;
+        selector.appendChild(opt);
+    });
+    if (files.length > 0) {
+        loadOBJ(files[0]);
+    }
+});
+
+selector.addEventListener('change', (e) => {
+    loadOBJ(e.target.value);
+});
+
+window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* Render loop */
+function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+}
+animate();
+</script>
+
+</body>
+</html>

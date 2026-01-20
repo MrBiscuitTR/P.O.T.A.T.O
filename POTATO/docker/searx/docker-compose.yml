@@ -1,0 +1,27 @@
+services: 
+  redis: 
+    container_name: searxng-redis
+    image: redis:alpine
+    command: redis-server --save "" --appendonly "no" 
+    networks: [searxng] 
+    tmpfs: /var/lib/redis 
+    restart: always 
+    cap_drop: [ALL] 
+    cap_add: [SETGID, SETUID, DAC_OVERRIDE] 
+  searxng: 
+    container_name: searxng 
+    image: searxng/searxng:latest 
+    ports: 
+      - "127.0.0.1:8080:8080" # localhost only 
+    volumes: 
+      - ./settings.yml:/etc/searxng/settings.yml:ro 
+    environment: 
+      - SEARXNG_BASE_URL=http://localhost:8080/ 
+    networks: [searxng] 
+    restart: always 
+    depends_on: [redis] 
+    cap_drop: [ALL] 
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE] 
+networks: 
+  searxng: 
+    driver: bridge

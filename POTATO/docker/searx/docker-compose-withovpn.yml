@@ -1,0 +1,57 @@
+version: "3.7"
+
+services:
+  gluetun:
+    container_name: gluetun
+    image: qmcgaw/gluetun:latest
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - ./vpn:/gluetun
+    environment:
+      - VPN_TYPE=openvpn
+      - OPENVPN_CONFIG=<...>.ovpn
+      - OPENVPN_USER=<openvpn username>
+      - OPENVPN_PASSWORD=<openvpn password>
+      - TZ=UTC
+      - LOG_LEVEL=info
+    restart: always
+    networks:
+      - searxng
+    ports:
+      - "127.0.0.1:8080:8080"
+
+
+  redis:
+    container_name: searxng-redis
+    image: redis:alpine
+    command: redis-server --save "" --appendonly "no"
+    tmpfs: /var/lib/redis
+    restart: always
+    network_mode: "service:gluetun"
+    cap_drop: [ALL]
+    cap_add: [SETGID, SETUID, DAC_OVERRIDE]
+    depends_on:
+      - gluetun
+
+  searxng:
+    container_name: searxng
+    image: searxng/searxng:latest
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    restart: always
+    network_mode: "service:gluetun"
+    depends_on:
+      - redis
+      - gluetun
+
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID, DAC_OVERRIDE]
+
+networks:
+  searxng:
+    driver: bridge

@@ -183,3 +183,14 @@ cython_debug/
 *.env
 OLD/
 project-notes.txt
+/POTATO/components/visual_tools/graphs_output
+/POTATO/components/visual_tools/generated_images
+POTATO/docker/searx/vpn/nl-free-146.protonvpn.udp.ovpn
+POTATO/docker/searx/vpn/servers.json
+POTATO/docker/searx/vpn/auth.txt
+/POTATO/webui/static/fonts/Roboto_Mono
+POTATO/docker/searx/vpn/nl-free-146.protonvpn.tcp.ovpn
+*.png
+*.obj
+/.vscode
+/.continue

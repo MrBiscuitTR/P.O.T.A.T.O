@@ -1,0 +1,95 @@
+{
+  "configuration": {
+    "potato": {
+      "OLLAMA_API_URL": "http://localhost:11434/api/generate",
+      "DISCORD_BOT_TOKEN": "",
+      "DISCORD_WEBHOOK_URL": ""
+    },
+    "ollama_models": {
+      "CORE_OLLAMA_MODEL": "gpt-oss:20b",
+      "SUMMARIZATION_OLLAMA_MODEL": "gemma:4b",
+      "RELEVANCE_OLLAMA_MODEL": "gemma:4b",
+      "EMBEDDING_OLLAMA_MODEL": "",
+      "TTS_MODEL_PATH": ""
+    },
+    "stt_model_path": "",
+    "searxng_api_url": "http://localhost:8080/search"
+  },
+  "data_paths": {
+    "LOCAL_DATA_PATH": "./data/local/",
+    "VECTOR_DB_PATH": "./data/vector_db/",
+    "OTHER_DATA_PATH": "./data/chats/"
+  },
+  "core_llm_config": {
+    "MAX_INTERMEDIATE_TOKENS": -1,
+    "MAX_TOKENS": 4096,
+    "MAX_SPEECH_TOKENS": 256,
+    "TEMPERATURE": 0.7
+  },
+  "online_search_config": {
+    "SEARXNG_NUM_RESULTS": 5,
+    "SMART_SCANNING": true,
+    "RECURSIVE_SEARCH": false,
+    "RECURSIVE_SEARCH_DEPTH": 2,
+    "SUMMARIZE_SEARCH_RESULTS": true
+  },
+  "rag_config": {
+    "RAG_TOP_K": 10,
+    "RAG_MAX_TOKENS": 4096,
+    "CHUNK_SIZE": 500,
+    "CHUNK_OVERLAP": 50,
+    "RELEVANCE_CHECK_RAG": true,
+    "RELEVANCE_CHECK_THRESHOLD": 0.75,
+    "SUMMARIZE_RETRIEVED_DOCS": true
+  },
+  "safe_code_execution_config": {
+    "CHECK_CODE_SAFETY": true,
+    "CODE_EXECUTION_TIMEOUT": 5,
+    "SANDBOX_PATH": "./sandbox/"
+  },
+  "web_ui_config": {
+    "ENABLE_WEBUI": true,
+    "WEBUI_PORT": 8080,
+    "WEBUI_HOST": "localhost",
+    "ENABLE_WEBUI_AUTH": true,
+    "WEBUI_USERNAME": "admin",
+    "WEBUI_PASSWORD": "admin",
+    "ACCEPT_TEXT_FILE_TYPES": "txt,pdf,docx,md,doc,xlsx,csv",
+    "ACCEPT_IMAGE_FILE_TYPES": "png,jpg,jpeg,gif,bmp,pbm,pgm,ppm,avif,heic,heif,webp"
+  },
+  "voice_config": {
+    "WAKE_WORD": "potato",
+    "SILENCE_THRESHOLD": 1.2,
+    "SLEEP_WORDS": "stop,go to sleep,goodbye,exit, okay thanks, thank you, done, enough",
+    "RESET_CONTEXT_WORDS": "reset context,new conversation,start over,clear history"
+  },
+  "bools": {
+    "USE_TOR": false,
+    "ENABLE_HISTORY": true,
+    "RESET_HISTORY_ON_START": false,
+    "SAVE_SENT_FILES": false,
+    "ENABLE_FILE_UPLOAD": true,
+    "ENABLE_FOLDER_UPLOAD": true,
+    "ENABLE_CODE_UPLOAD": true,
+    "ENABLE_IMAGE_PROCESSING": true,
+    "ENABLE_SENT_URLS": true,
+    "SAFE_CODE_EXECUTION": true,
+    "USE_LATEX_RENDERING": true,
+    "ENABLE_DISCORD_BOT": false,
+    "ENABLE_TTS": false,
+    "ENABLE_STT": false,
+    "ENABLE_SEARXNG_SEARCH": false,
+    "ENABLE_DANGEROUS_TOOLS": false,
+    "ENABLE_OLLAMA_STREAMING": true,
+    "ENABLE_AGENTS": false,
+    "ENABLE_AUTONOMOUS_MODE": false,
+    "ENABLE_DEVICE_CONTROL": false,
+    "ENABLE_LOGS": true,
+    "ENABLE_ALWAYS_HITL": false,
+    "IDIOT_MODE": false
+  },
+  "ignore": {
+    "LOGS_PATH": "./logs/",
+    "TEMP_PATH": "./temp/"
+  }
+}
