@@ -1,0 +1,1 @@
+# mostly for vocal agent memory management, chat agents use their own ollama memory handling
