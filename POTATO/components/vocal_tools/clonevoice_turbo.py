@@ -67,6 +67,7 @@ ABBREVIATIONS = [
 ]
 
 def split_sentences(text: str) -> list[str]:
+    """Split text into sentences, group 3 by 3, overflow goes into previous group."""
     text = text.strip()
     if not text:
         return []
@@ -80,6 +81,7 @@ def split_sentences(text: str) -> list[str]:
 
     sentences = re.split(r'(?<=[.!?])\s+', text)
 
+    # Restore abbreviations
     restored = []
     for s in sentences:
         for ph, orig in protected.items():
@@ -88,29 +90,35 @@ def split_sentences(text: str) -> list[str]:
         if s:
             restored.append(s)
 
-    if len(restored) <= 4:
-        return restored
+    # If 3 or fewer sentences, return as is
+    if len(restored) <= 3:
+        return [' '.join(restored)]
 
-    groups = []
-    for i in range(0, len(restored), 4):
-        groups.append(' '.join(restored[i:i+4]))
+    # Group sentences in chunks of 3
+    chunk_size = 3
+    groups = [restored[i:i+chunk_size] for i in range(0, len(restored), chunk_size)]
 
-    if len(restored) % 4 != 0:
-        tail = groups.pop()
-        groups[-1] += ' ' + tail
+    # Merge the last group into the previous if it has fewer than chunk_size sentences
+    if len(groups[-1]) < chunk_size and len(groups) > 1:
+        groups[-2].extend(groups[-1])
+        groups.pop()
 
-    return groups
+    # Join sentences back into strings
+    return [' '.join(g) for g in groups]
 
 # =========================
 # Streaming TTS Pipeline
 # =========================
 
 stop_event = threading.Event()
+shutdown_event = threading.Event()
+audio_q = queue.Queue(maxsize=2)
+producer_thread = None
 
 def generate_worker(text_groups, audio_q):
     try:
         for sentence in text_groups:
-            if stop_event.is_set():
+            if stop_event.is_set() or shutdown_event.is_set():
                 break
 
             ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device=="cuda" else torch.no_grad()
@@ -118,9 +126,8 @@ def generate_worker(text_groups, audio_q):
                 wav = model.generate(
                     text=sentence,
                     audio_prompt_path=str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None,
-                    # exaggeration=0.8,
-                    length_scale= 1.2,
-                    noise_scale=0.7
+                    exaggeration=0.8, 
+                    cfg_weight=0.5
                 )
 
             wav = wav.squeeze()
@@ -128,25 +135,28 @@ def generate_worker(text_groups, audio_q):
                 wav = wav / wav.abs().max()
 
             audio_q.put((sentence, wav.cpu().float().numpy()))
-
     finally:
         audio_q.put(None)
 
 def speak_sentences_grouped(text: str):
-    groups = split_sentences(text)
-    audio_q = queue.Queue(maxsize=2)
+    """Stream TTS in chunks. Safe for very long text."""
+    global producer_thread
+    stop_event.clear()
+    audio_q.queue.clear()
 
-    producer = threading.Thread(
+    groups = split_sentences(text)
+
+    producer_thread = threading.Thread(
         target=generate_worker,
         args=(groups, audio_q),
         daemon=True
     )
-    producer.start()
+    producer_thread.start()
 
     try:
         while True:
             item = audio_q.get()
-            if item is None or stop_event.is_set():
+            if item is None or stop_event.is_set() or shutdown_event.is_set():
                 break
 
             sentence, wav_np = item
@@ -160,8 +170,38 @@ def speak_sentences_grouped(text: str):
     except KeyboardInterrupt:
         stop_event.set()
         sd.stop()
-        print("\nCtrl+C → exiting.\n")
-        sys.exit(0)
+        print("\nCtrl+C → exiting current TTS.")
+
+# =========================
+# Control functions
+# =========================
+
+def stop_current_tts():
+    """Stop the current generation & playback, keep model loaded."""
+    stop_event.set()
+    sd.stop()
+    # Ensure audio queue is cleared
+    while not audio_q.empty():
+        audio_q.get_nowait()
+    if producer_thread is not None:
+        producer_thread.join(timeout=0.1)
+    print("→ Current TTS stopped, model still loaded.")
+
+def shutdown_tts():
+    """Stop everything and unload the model to free VRAM."""
+    stop_event.set()
+    shutdown_event.set()
+    sd.stop()
+    # Join producer thread if running
+    if producer_thread is not None:
+        producer_thread.join(timeout=0.1)
+
+    global model
+    if model is not None:
+        del model
+        model = None
+        torch.cuda.empty_cache()
+    print("→ TTS shutdown complete, model unloaded, VRAM freed.")
 
 # =========================
 # Main loop
@@ -183,6 +223,7 @@ if __name__ == "__main__":
 
     except KeyboardInterrupt:
         stop_event.set()
+        shutdown_event.set()
         sd.stop()
         print("\nExited.\n")
         sys.exit(0)
