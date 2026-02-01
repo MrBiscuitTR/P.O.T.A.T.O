@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  weaviate:
+    image: semitechnologies/weaviate:1.36.0-dev-5d22f25.amd64
+    ports:
+      - "127.0.0.1:8081:8080"    # accessible only from your host
+    environment:
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    restart: unless-stopped
+    networks:
+      - local_only_net
+
+volumes:
+  weaviate_data:
+
+networks:
+  local_only_net:
+    driver: bridge
+    internal: true   # prevents any internet access, only local container-to-container communication

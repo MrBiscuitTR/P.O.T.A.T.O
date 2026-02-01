@@ -206,7 +206,7 @@ function startNewChat() {
 
 function updateStats() {
     fetch('/api/system_stats').then(r=>r.json()).then(d=>{
-        setBar('cpu', d.cpu); setBar('ram', d.ram); setBar('gpu', d.gpu);
+        setBar('cpu', d.cpu); setBar('ram', d.ram); setBar('gpu', d.gpu); setBar('vram', d.vram)
         document.getElementById('temp-val').innerText = `${Math.round(d.gpu_temp)}°C`;
     });
 }

@@ -22,6 +22,23 @@ P.O.T.A.T.O is a work in progress and will be updated regularly as the author fi
 
 ## Installation
 
+## Setup
+
+```
+git clone https://github.com/MrBiscuitTR/P.O.T.A.T.O.git
+cd P.O.T.A.T.O/POTATO
+python -m venv venv         # create virtual environment
+# Windows
+venv\Scripts\activate
+# Mac/Linux
+source venv/bin/activate
+xxxxxxx DONT do xxxxxx pip install -e .
+pip install -r requirements.txt
+Usage
+from POTATO.components.example import examplefunc
+examplefunc()
+```
+
 To install P.O.T.A.T.O,
 
 1. Clone this repository.

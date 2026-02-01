@@ -10,6 +10,7 @@ from werkzeug.utils import secure_filename
 # --- IMPORTS ---
 # We import your function, but we will call it with specific parameters
 from POTATO.main import simple_stream_test 
+from POTATO.components.vocal_tools.clonevoice_turbo import speak_sentences_grouped, stop_current_tts, shutdown_tts
 
 # --- TOOL REGISTRY ---
 # Map the string names from LLM to actual python functions in your components
@@ -23,7 +24,8 @@ app = Flask(__name__)
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SETTINGS_PATH = os.path.join(BASE_DIR, 'settings.json')
+SETTINGS_PATH = os.path.join(BASE_DIR, 'config.json')
+print(SETTINGS_PATH)
 DATA_DIR = os.path.join(BASE_DIR, '.data')
 USER_SETTINGS_PATH = os.path.join(DATA_DIR, 'usersettings.json')
 CHATS_DIR = os.path.join(DATA_DIR, 'chats')
@@ -114,15 +116,16 @@ def handle_settings():
 def system_stats():
     cpu = psutil.cpu_percent(interval=None)
     ram = psutil.virtual_memory().percent
-    gpu, gpu_temp = 0, 0
+    gpu, gpu_temp, vram = 0, 0, 0
     try:
         import GPUtil
         gpus = GPUtil.getGPUs()
         if gpus:
             gpu = gpus[0].load * 100
             gpu_temp = gpus[0].temperature
+            vram = gpus[0].memoryUtil*100
     except: pass
-    return jsonify({"cpu": cpu, "ram": ram, "gpu": gpu, "gpu_temp": gpu_temp})
+    return jsonify({"cpu": cpu, "ram": ram, "gpu": gpu, "gpu_temp": gpu_temp, 'vram': vram})
 
 @app.route('/api/chats', methods=['GET'])
 def list_chats_route():
@@ -232,4 +235,4 @@ def chat_stream():
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=1234, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)

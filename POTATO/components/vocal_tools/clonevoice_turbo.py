@@ -33,6 +33,7 @@ except ImportError:
 # Folders & paths
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMP_DIR   = SCRIPT_DIR / ".temp"
+print("Using temp dir:", TEMP_DIR)
 TEMP_DIR.mkdir(exist_ok=True)
 
 SAMPLES_DIR = SCRIPT_DIR / "samples"
@@ -171,7 +172,8 @@ def speak_sentences_grouped(text: str):
         stop_event.set()
         sd.stop()
         print("\nCtrl+C → exiting current TTS.")
-
+        torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
 # =========================
 # Control functions
 # =========================
