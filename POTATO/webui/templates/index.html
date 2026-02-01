@@ -6,129 +6,326 @@
     <title>P.O.T.A.T.O // Interface</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
     <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   </head>
   <body>
     <div class="scanline"></div>
     <div class="overlay"></div>
 
     <div class="app-container">
+      <!-- Left Sidebar -->
       <aside class="sidebar" id="left-sidebar">
-        <div class="brand">
-          <h1>P.O.T.A.T.O</h1>
-          <span class="status-indicator online">ONLINE</span>
+        <div class="sidebar-header">
+          <button class="hamburger" id="hamburger-left">
+            <i class="fas fa-bars"></i>
+          </button>
+          <div class="brand">
+            <h1>P.O.T.A.T.O</h1>
+            <span class="status-indicator">ONLINE</span>
+          </div>
         </div>
 
-        <div class="nav-menu">
-          <button class="nav-btn active" onclick="switchTab('chat')"><i class="fa-solid fa-message"></i> COMM_LINK</button>
-          <button class="nav-btn" onclick="switchTab('browser')"><i class="fa-solid fa-globe"></i> NET_RUNNER</button>
-          <button class="nav-btn" onclick="switchTab('settings')"><i class="fa-solid fa-sliders"></i> CONFIG</button>
-          <button class="nav-btn critical" onclick="toggleVoice()"><i class="fa-solid fa-microphone-lines"></i> VOX_CORE</button>
-        </div>
+        <div class="sidebar-content">
+          <div class="nav-menu">
+            <button class="nav-btn active" onclick="switchTab('chat')">
+              <i class="fas fa-comments"></i> <span class="nav-label">CHAT</span>
+            </button>
+            <button class="nav-btn" onclick="switchTab('vox-core')">
+              <i class="fas fa-microphone"></i> <span class="nav-label">VOX CORE</span>
+            </button>
+            <button class="nav-btn" onclick="switchTab('browser')">
+              <i class="fas fa-globe"></i> <span class="nav-label">BROWSER</span>
+            </button>
+            <button class="nav-btn" onclick="switchTab('settings')">
+              <i class="fas fa-cog"></i> <span class="nav-label">SETTINGS</span>
+            </button>
+            <button class="nav-btn critical" onclick="toggleRightSidebar()">
+              <i class="fas fa-database"></i> <span>RAG TOOLS</span>
+            </button>
+          </div>
 
-        <div class="stats-panel">
-          <h3>SYSTEM_METRICS</h3>
-          <div class="stat-row"><span>CPU</span><div class="bar-container"><div class="bar" id="cpu-bar" style="width: 0%"></div></div><span id="cpu-val">0%</span></div>
-          <div class="stat-row"><span>RAM</span><div class="bar-container"><div class="bar" id="ram-bar" style="width: 0%"></div></div><span id="ram-val">0%</span></div>
-          <div class="stat-row"><span>GPU</span><div class="bar-container"><div class="bar" id="gpu-bar" style="width: 0%"></div></div><span id="gpu-val">0%</span></div>
-          <div class="stat-row"><span>VRAM</span><div class="bar-container"><div class="bar" id="vram-bar" style="width: 0%"></div></div><span id="vram-val">0%</span></div>
-          <div class="stat-row"><span>GPU TEMP</span><span id="temp-val" class="temp-display">0°C</span></div>
+          <!-- Model Picker -->
+          <div class="model-picker">
+            <h3>AI MODEL</h3>
+            <select id="model-selector">
+              <option value="gpt-oss:20b">Loading models...</option>
+            </select>
+          </div>
+
+          <!-- Stats Panel -->
+          <div class="stats-panel">
+            <h3>SYSTEM STATS</h3>
+            <div class="stat-row">
+              <span>CPU</span>
+              <div class="bar-container">
+                <div class="bar" id="cpu-bar"></div>
+              </div>
+              <span id="cpu-val">0%</span>
+            </div>
+            <div class="stat-row">
+              <span>RAM</span>
+              <div class="bar-container">
+                <div class="bar" id="ram-bar"></div>
+              </div>
+              <span id="ram-val">0%</span>
+            </div>
+            <div class="stat-row">
+              <span>GPU</span>
+              <div class="bar-container">
+                <div class="bar" id="gpu-bar"></div>
+              </div>
+              <span id="gpu-val">0%</span>
+            </div>
+            <div class="stat-row">
+              <span>VRAM</span>
+              <div class="bar-container">
+                <div class="bar" id="vram-bar"></div>
+              </div>
+              <span id="vram-val">0%</span>
+            </div>
+            <div class="stat-row">
+              <span>TEMP</span>
+              <span class="temp-display" id="temp-display">0°C</span>
+            </div>
+          </div>
         </div>
       </aside>
 
+      <!-- Main Display -->
       <main class="main-display">
         
+        <!-- Chat View -->
         <section id="chat-view" class="view-section active">
-          <div class="chat-container-fixed">
-            <div class="rag-sidebar-container" id="rag-panel">
-                </div>
+          <div class="chat-layout">
+            <div class="chat-history-sidebar">
+              <div class="search-box">
+                <input type="text" placeholder="Search chats..." />
+              </div>
+              <button class="new-chat-btn" onclick="startNewChat()">
+                <i class="fas fa-plus"></i> New Chat
+              </button>
+              <ul class="chat-list" id="chat-list"></ul>
+            </div>
 
-            <div class="chat-layout">
-              <div class="chat-history-sidebar">
-                <div class="search-box"><input type="text" placeholder="SEARCH_LOGS..." /></div>
-                <ul class="chat-list"></ul>
+            <div class="chat-interface">
+              <div class="chat-header">
+                <button class="mobile-menu-toggle" id="mobile-menu-toggle" onclick="toggleMobileMenu()">
+                  <i class="fas fa-bars"></i>
+                </button>
+                <span id="current-model-display">Model: Loading...</span>
+                <button class="unload-btn" onclick="unloadChatModel()" title="Unload model from VRAM">
+                  <i class="fas fa-eject"></i> Unload
+                </button>
+                <button class="rag-toggle-btn" id="rag-toggle-mobile" onclick="toggleRightSidebar()">
+                  <i class="fas fa-database"></i>
+                </button>
               </div>
               
-              <div class="chat-interface">
-                <div class="chat-window" id="chat-window">
-                  <div class="msg system">Initialization Complete. Systems Nominal.</div>
-                </div>
+              <div class="chat-window" id="chat-window"></div>
 
-                <div class="input-area-container">
-                    <div class="input-widgets">
-                        <label class="widget-icon" title="Upload File">
-                            <i class="fa-solid fa-paperclip"></i>
-                            <input type="file" hidden onchange="uploadFile(this)">
-                        </label>
-                        <label class="widget-icon" title="Upload Folder">
-                            <i class="fa-solid fa-folder"></i>
-                            <input type="file" hidden webkitdirectory onchange="uploadFolder(this)">
-                        </label>
-                        <div class="widget-icon" id="mic-btn" onmousedown="startRecording()" onmouseup="stopRecording()">
-                            <i class="fa-solid fa-microphone"></i>
-                        </div>
-                        <div class="widget-icon right-toggle" onclick="toggleRightSidebar()" title="Toggle RAG">
-                            <i class="fa-solid fa-database"></i>
-                        </div>
-                    </div>
-                    <div class="input-area">
-                        <textarea id="chat-input" placeholder="Execute Command..." rows="1"></textarea>
-                        <button id="send-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
-                    </div>
+              <div class="input-area-container">
+                <div class="input-widgets">
+                  <label class="widget-icon" title="Upload File">
+                    <i class="fas fa-paperclip"></i>
+                    <input type="file" id="file-upload" style="display:none;" onchange="uploadFile(this)" />
+                  </label>
+                  <label class="widget-icon" title="Upload Folder">
+                    <i class="fas fa-folder"></i>
+                    <input type="file" webkitdirectory directory multiple id="folder-upload" style="display:none;" onchange="uploadFolder(this)" />
+                  </label>
+                  <div class="widget-icon" title="Record Voice" onclick="toggleVoiceRecording()">
+                    <i class="fas fa-microphone"></i>
+                  </div>
+                  <div class="widget-icon" title="Web Search" id="web-search-toggle">
+                    <i class="fas fa-search"></i>
+                  </div>
+                  <div class="widget-icon" title="Stealth Mode" id="stealth-toggle">
+                    <i class="fas fa-shield-alt"></i>
+                  </div>
+                </div>
+                
+                <div class="input-area">
+                  <textarea id="chat-input" rows="2" placeholder="Message P.O.T.A.T.O..." onkeydown="handleInputKeydown(event)"></textarea>
+                  <button id="send-btn" onclick="sendMessage()" class="send-btn">
+                    <i class="fas fa-paper-plane"></i>
+                  </button>
+                  <button id="stop-inference-btn" onclick="stopInference()" class="stop-btn-inline" style="display: none;">
+                    <i class="fas fa-stop"></i>
+                  </button>
                 </div>
               </div>
             </div>
           </div>
         </section>
 
+        <!-- Vox Core View -->
+        <section id="vox-core-view" class="view-section">
+          <div class="vox-core-container">
+            <div class="vox-header">
+              <button class="mobile-menu-toggle" onclick="toggleMobileMenu()">
+                <i class="fas fa-bars"></i>
+              </button>
+              <h2>VOX CORE - Voice Assistant</h2>
+              <p class="vox-subtitle">Real-time voice conversation with dolphin-llama3:8b</p>
+            </div>
+
+            <div class="vox-language-selector">
+              <label>Language:</label>
+              <select id="vox-language">
+                <option value="en">English</option>
+                <option value="fr">French</option>
+                <option value="es">Spanish</option>
+                <option value="de">German</option>
+                <option value="tr">Turkish</option>
+                <option value="zh">Chinese</option>
+              </select>
+              <button class="unload-btn" onclick="unloadVoxModels()" title="Stop VOX and unload models">
+                <i class="fas fa-stop-circle"></i> Stop VOX
+              </button>
+            </div>
+
+            <div class="vox-visualizer">
+              <div class="vox-status" id="vox-status">Initializing...</div>
+              <div class="waveform" id="waveform">
+                <div class="wave"></div>
+                <div class="wave"></div>
+                <div class="wave"></div>
+                <div class="wave"></div>
+                <div class="wave"></div>
+              </div>
+            </div>
+
+            <div class="vox-transcript" id="vox-transcript">
+              <p class="transcript-label">Transcript:</p>
+              <div id="vox-messages"></div>
+            </div>
+
+            <div class="vox-controls">
+              <button class="vox-btn vox-btn-danger" id="vox-stop-btn" onclick="stopVoxCore()">
+                <i class="fas fa-stop"></i> Stop
+              </button>
+            </div>
+
+            <div class="vox-settings">
+              <h3>Interrupt Words</h3>
+              <p class="vox-hint">Say any of these to stop: "okay thanks", "stop", "enough", "thank you", "bye", "done"</p>
+            </div>
+
+            <!-- VOX Chat History Sidebar -->
+            <div class="vox-chat-sidebar">
+              <h3>Chat History</h3>
+              <ul class="vox-chat-list" id="vox-chat-list"></ul>
+            </div>
+          </div>
+        </section>
+
+        <!-- Browser View -->
         <section id="browser-view" class="view-section">
           <div class="browser-header">
-            <div class="url-bar">http://localhost:8080/searx</div>
-            <div class="browser-controls"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+            <button class="mobile-menu-toggle" onclick="toggleMobileMenu()">
+              <i class="fas fa-bars"></i>
+            </button>
+            <span class="url-bar">https://example.com</span>
+            <button><i class="fas fa-redo"></i></button>
           </div>
           <div class="browser-placeholder">
-            <i class="fa-solid fa-network-wired"></i>
-            <p>PLAYWRIGHT REMOTE VIEW LINKED</p>
-            <p class="sub-text">Waiting for visual feed...</p>
+            <i class="fas fa-globe"></i>
+            <p>Browser View (Placeholder)</p>
           </div>
         </section>
 
+        <!-- Settings View -->
         <section id="settings-view" class="view-section">
-          <h2>SYSTEM_CONFIGURATION</h2>
-          <div id="settings-container" class="settings-grid"></div>
-          <button class="save-btn" onclick="saveSettings()">COMMIT_CHANGES</button>
+          <div class="settings-header">
+            <button class="mobile-menu-toggle" onclick="toggleMobileMenu()">
+              <i class="fas fa-bars"></i>
+            </button>
+            <h2>CONFIGURATION</h2>
+            <button class="reset-btn" onclick="resetSettings()">
+              <i class="fas fa-undo"></i> Reset to Defaults
+            </button>
+          </div>
+          
+          <div class="settings-container">
+            <div class="settings-tabs">
+              <button class="settings-tab active" onclick="switchSettingsTab('core')">Core LLM</button>
+              <button class="settings-tab" onclick="switchSettingsTab('online')">Online Search</button>
+              <button class="settings-tab" onclick="switchSettingsTab('rag')">RAG</button>
+              <button class="settings-tab" onclick="switchSettingsTab('voice')">Voice</button>
+              <button class="settings-tab" onclick="switchSettingsTab('bools')">Features</button>
+            </div>
+
+            <div id="settings-content" class="settings-grid">
+              <!-- Settings will be dynamically loaded here -->
+            </div>
+
+            <button class="save-btn" onclick="saveSettings()">
+              <i class="fas fa-save"></i> SAVE SETTINGS
+            </button>
+          </div>
         </section>
+
       </main>
 
-      <aside class="sidebar right-sidebar collapsed" id="right-sidebar">
+      <!-- Right Sidebar (RAG Tools) -->
+      <aside class="sidebar right-sidebar" id="right-sidebar">
         <div class="sidebar-header">
-            <h3>RAG_MODULE</h3>
-            <button onclick="toggleRightSidebar()" class="close-btn"><i class="fa-solid fa-xmark"></i></button>
+          <h3>RAG TOOLS</h3>
+          <button class="close-btn" onclick="toggleRightSidebar()">
+            <i class="fas fa-times"></i>
+          </button>
         </div>
+        
         <div class="rag-content">
-            <div class="control-group">
-                <label>ENABLED</label>
-                <input type="checkbox" id="rag-toggle">
-            </div>
-            <div class="control-group">
-                <label>CONTEXT_FOLDER</label>
-                <input type="text" id="rag-folder" placeholder="/data/context">
-            </div>
-            <div class="control-group">
-                <label>EMBEDDING_MODEL</label>
-                <select><option>nomic-embed-text</option><option>mxbai-embed-large</option></select>
-            </div>
-            <button class="action-btn" onclick="triggerEmbed()">EMBED_DATA</button>
-            <div id="rag-status" class="status-log">Status: Idle</div>
+          <div class="control-group">
+            <label>Context Folder</label>
+            <input type="text" id="rag-folder" placeholder="/path/to/docs" />
+            <button class="action-btn" onclick="selectRagFolder()">Browse</button>
+          </div>
+
+          <div class="control-group">
+            <label>Embedding Model</label>
+            <select id="rag-embed-model">
+              <option value="nomic-embed-text:latest">nomic-embed-text:latest</option>
+            </select>
+          </div>
+
+          <div class="control-group">
+            <label>
+              <input type="checkbox" id="rag-enable" /> Enable RAG for Chat
+            </label>
+          </div>
+
+          <button class="action-btn" onclick="embedFolderContents()">
+            <i class="fas fa-database"></i> Embed Folder
+          </button>
+
+          <button class="action-btn" onclick="searchRagIndex()">
+            <i class="fas fa-search"></i> Search Index
+          </button>
+
+          <div class="status-log" id="rag-status">
+            Ready to index documents...
+          </div>
         </div>
       </aside>
     </div>
 
+    <!-- Voice Recording Overlay -->
     <div id="voice-overlay" class="voice-overlay hidden">
       <div class="voice-container">
-        <h2>LISTENING...</h2>
-        <div class="visualizer"><div class="wave"></div><div class="wave"></div><div class="wave"></div><div class="wave"></div><div class="wave"></div></div>
-        <button class="close-voice" onclick="toggleVoice()">TERMINATE_VOX</button>
+        <h2>RECORDING...</h2>
+        <div class="visualizer">
+          <div class="wave"></div>
+          <div class="wave"></div>
+          <div class="wave"></div>
+          <div class="wave"></div>
+          <div class="wave"></div>
+        </div>
+        <button class="close-voice" onclick="stopVoiceRecording()">STOP RECORDING</button>
       </div>
     </div>
 

@@ -5,6 +5,7 @@ Chatterbox TTS (English + Multilingual) - Offline real-time sentence-by-sentence
 import os
 import re
 import torch
+import threading
 import torchaudio as ta
 import sounddevice as sd
 from pathlib import Path
@@ -93,13 +94,45 @@ def select_output_device():
 
 select_output_device()
 
-print("Loading English model...")
-english_model = ChatterboxTTS.from_pretrained(device=device)
+# Models loaded on-demand, not at import time
+_english_model = None
+_multilingual_model = None
+_model_lock = threading.Lock()
 
-print("Loading Multilingual model...")
-multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+def _get_english_model():
+    """Lazy-load English model"""
+    global _english_model
+    if _english_model is None:
+        with _model_lock:
+            if _english_model is None:
+                print("Loading Chatterbox English model...")
+                _english_model = ChatterboxTTS.from_pretrained(device=device)
+                print("English model loaded.")
+    return _english_model
 
-print("Models loaded.\n")
+def _get_multilingual_model():
+    """Lazy-load Multilingual model"""
+    global _multilingual_model
+    if _multilingual_model is None:
+        with _model_lock:
+            if _multilingual_model is None:
+                print("Loading Chatterbox Multilingual model...")
+                _multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+                print("Multilingual model loaded.")
+    return _multilingual_model
+
+def unload_models():
+    """Unload both models from memory"""
+    global _english_model, _multilingual_model
+    with _model_lock:
+        if _english_model is not None:
+            del _english_model
+            _english_model = None
+        if _multilingual_model is not None:
+            del _multilingual_model
+            _multilingual_model = None
+        torch.cuda.empty_cache()
+        print("Chatterbox models unloaded from VRAM")
 
 # Sentence splitter (unchanged)
 ABBREVIATIONS = [
@@ -143,7 +176,7 @@ def speak(text: str, language: str = "en"):
         print(f"Warning: Unsupported '{lang}' → fallback to English")
         lang = "en"
 
-    model = english_model if lang == "en" else multilingual_model
+    model = _get_english_model() if lang == "en" else _get_multilingual_model()
     lang_id = None if lang == "en" else lang
 
     sentences = split_sentences(text)

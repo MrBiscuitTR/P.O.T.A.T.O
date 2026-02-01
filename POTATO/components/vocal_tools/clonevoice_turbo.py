@@ -56,9 +56,20 @@ if not ckpt_path.is_dir() or not (ckpt_path / "t3_turbo_v1.safetensors").exists(
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-print("Loading model...")
-model = ChatterboxTurboTTS.from_local(ckpt_dir=str(ckpt_path), device=device)
-print("Model loaded.\n")
+# Model loaded on-demand, not at import time
+_model = None
+_model_lock = threading.Lock()
+
+def _get_model():
+    """Lazy-load the model only when needed"""
+    global _model
+    if _model is None:
+        with _model_lock:
+            if _model is None:  # Double-check locking
+                print("Loading Chatterbox Turbo model...")
+                _model = ChatterboxTurboTTS.from_local(ckpt_dir=str(ckpt_path), device=device)
+                print("Chatterbox Turbo model loaded.")
+    return _model
 
 # Abbreviation-safe sentence splitter
 ABBREVIATIONS = [
@@ -118,6 +129,7 @@ producer_thread = None
 
 def generate_worker(text_groups, audio_q):
     try:
+        model = _get_model()  # Get model instance
         for sentence in text_groups:
             if stop_event.is_set() or shutdown_event.is_set():
                 break
@@ -146,6 +158,7 @@ def speak_sentences_grouped(text: str):
     audio_q.queue.clear()
 
     groups = split_sentences(text)
+    model = _get_model()  # Get model instance for sample rate
 
     producer_thread = threading.Thread(
         target=generate_worker,
@@ -198,12 +211,22 @@ def shutdown_tts():
     if producer_thread is not None:
         producer_thread.join(timeout=0.1)
 
-    global model
-    if model is not None:
-        del model
-        model = None
+    global _model
+    if _model is not None:
+        del _model
+        _model = None
         torch.cuda.empty_cache()
     print("→ TTS shutdown complete, model unloaded, VRAM freed.")
+
+def unload_model():
+    """Unload the model from memory"""
+    global _model
+    with _model_lock:
+        if _model is not None:
+            del _model
+            _model = None
+            torch.cuda.empty_cache()
+            print("Chatterbox Turbo model unloaded from VRAM")
 
 # =========================
 # Main loop
