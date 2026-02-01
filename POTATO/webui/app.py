@@ -1,10 +1,15 @@
 import os
 import json
+import sys
 import time
 import glob
 import uuid
 import psutil
 import subprocess
+import atexit
+import signal
+import re
+import ollama
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from werkzeug.utils import secure_filename
 from pathlib import Path
@@ -29,6 +34,16 @@ TOOL_REGISTRY = {
 }
 
 app = Flask(__name__)
+
+# Suppress logging for /api/system_stats endpoint
+import logging
+log = logging.getLogger('werkzeug')
+
+class NoStatsFilter(logging.Filter):
+    def filter(self, record):
+        return '/api/system_stats' not in record.getMessage()
+
+log.addFilter(NoStatsFilter())
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -96,8 +111,16 @@ def reset_user_settings():
         print(f"Error resetting settings: {e}")
         return False
 
-def save_chat_session(session_id, messages, title=None):
+def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
     """Save chat session to file"""
+    # Generate session_id if not provided
+    if not session_id:
+        session_id = str(uuid.uuid4())
+    
+    # Add vox_ prefix for voice chats if not already present
+    if is_voice_chat and not session_id.startswith('vox_'):
+        session_id = f"vox_{session_id}"
+    
     path = os.path.join(CHATS_DIR, f"{session_id}.json")
     if not title:
         if os.path.exists(path):
@@ -107,10 +130,26 @@ def save_chat_session(session_id, messages, title=None):
             except:
                 pass
         if not title:
-            # Generate title from first user msg
+            # Generate title from first user msg using AI
             for m in messages:
-                if m['role'] == 'user':
-                    title = m['content'][:30] + "..." if len(m['content']) > 30 else m['content']
+                if m['role'] == 'user' and m['content']:
+                    try:
+                        # Use Ollama to generate a concise title
+                        import ollama
+                        response = ollama.chat(
+                            model='qwen2.5-coder:7b',  # Fast model for title generation
+                            messages=[{
+                                'role': 'system',
+                                'content': 'Generate a very short title (max 25 chars) for this conversation. Just output the title, nothing else.'
+                            }, {
+                                'role': 'user',
+                                'content': m['content'][:200]  # First 200 chars of message
+                            }]
+                        )
+                        title = response['message']['content'].strip().strip('"\'')[:30]
+                    except:
+                        # Fallback to truncated first message
+                        title = m['content'][:27] + "..." if len(m['content']) > 27 else m['content']
                     break
             if not title:
                 title = "New Session"
@@ -135,14 +174,23 @@ def load_chat_session(session_id):
             return json.load(f)
     return None
 
-def get_all_chats(search_query=None):
-    """Get all chat sessions, optionally filtered by search query"""
+def get_all_chats(search_query=None, voice_only=False, text_only=False):
+    """Get all chat sessions, optionally filtered by search query and type"""
     files = glob.glob(os.path.join(CHATS_DIR, "*.json"))
     chats = []
     for p in files:
         try:
             with open(p, 'r') as f:
                 data = json.load(f)
+            
+            # Filter by chat type (voice vs text)
+            filename = os.path.basename(p)
+            is_voice = filename.startswith('vox_')
+            
+            if voice_only and not is_voice:
+                continue
+            if text_only and is_voice:
+                continue
             
             # Filter by search query
             if search_query:
@@ -187,10 +235,16 @@ def get_ollama_models():
         return []
 
 def stop_ollama_inference(model_name=None):
-    """Stop ongoing Ollama inference"""
+    """Stop ongoing Ollama inference and unload from VRAM"""
     try:
         if model_name:
+            # First stop the model
             subprocess.run(['ollama', 'stop', model_name], timeout=5)
+            # Then explicitly unload it by setting keep_alive to 0
+            try:
+                ollama.chat(model=model_name, messages=[], keep_alive=0)
+            except:
+                pass  # Model might already be stopped
         else:
             # Stop all models
             subprocess.run(['ollama', 'ps'], capture_output=True, timeout=5)
@@ -294,6 +348,73 @@ def unload_whisper_model():
     except Exception as e:
         print(f"Error unloading Whisper: {e}")
 
+def start_mcp_server():
+    """Start the MCP SearXNG server"""
+    global _mcp_server_process
+    
+    if _mcp_server_process and _mcp_server_process.poll() is None:
+        print("MCP server already running")
+        return
+    
+    try:
+        mcp_script = os.path.join(BASE_DIR, 'MCP', 'searx_mcp.py')
+        if not os.path.exists(mcp_script):
+            print(f"MCP script not found: {mcp_script}")
+            return
+        
+        # Get Python executable from current environment
+        python_exe = os.path.join(BASE_DIR, '.venv', 'Scripts', 'python.exe')
+        if not os.path.exists(python_exe):
+            python_exe = 'python'  # Fallback to system python
+        
+        _mcp_server_process = subprocess.Popen(
+            [python_exe, mcp_script],
+            cwd=os.path.join(BASE_DIR, 'MCP'),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+        )
+        print(f"MCP server started with PID: {_mcp_server_process.pid}")
+    except Exception as e:
+        print(f"Error starting MCP server: {e}")
+
+def stop_mcp_server():
+    """Stop the MCP SearXNG server"""
+    global _mcp_server_process
+    
+    if _mcp_server_process and _mcp_server_process.poll() is None:
+        try:
+            _mcp_server_process.terminate()
+            _mcp_server_process.wait(timeout=5)
+            print("MCP server stopped")
+        except subprocess.TimeoutExpired:
+            _mcp_server_process.kill()
+            print("MCP server killed")
+        except Exception as e:
+            print(f"Error stopping MCP server: {e}")
+        finally:
+            _mcp_server_process = None
+
+def cleanup_on_exit():
+    """Cleanup function to run on app shutdown"""
+    print("\nCleaning up...")
+    
+    # Stop MCP server
+    stop_mcp_server()
+    
+    # Unload all models
+    try:
+        unload_tts_models()
+    except:
+        pass
+    
+    try:
+        unload_whisper_model()
+    except:
+        pass
+    
+    print("Cleanup complete")
+
 def find_working_microphone():
     """Find a working microphone device by testing all available devices"""
     try:
@@ -357,20 +478,68 @@ def reset_settings():
         return jsonify({"status": "success", "settings": load_settings()})
     return jsonify({"status": "error"}), 500
 
+@app.route('/api/settings/descriptions', methods=['GET'])
+def get_setting_descriptions():
+    """Parse config.env.txt and return setting descriptions"""
+    try:
+        config_env_path = os.path.join(BASE_DIR, '..', 'config.env.txt')
+        descriptions = {}
+        
+        if os.path.exists(config_env_path):
+            with open(config_env_path, 'r', encoding='utf-8') as f:
+                current_key = None
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') and '=' not in line:
+                        continue
+                    
+                    if '=' in line:
+                        # Parse setting line: KEY="value" # Description
+                        parts = line.split('#', 1)
+                        key_value = parts[0].strip()
+                        
+                        if '=' in key_value:
+                            key = key_value.split('=')[0].strip()
+                            description = parts[1].strip() if len(parts) > 1 else 'No description available'
+                            descriptions[key] = description
+        
+        return jsonify(descriptions)
+    except Exception as e:
+        print(f"Error reading config.env.txt: {e}")
+        return jsonify({}), 500
+
 @app.route('/api/preferences', methods=['GET', 'POST'])
 def handle_preferences():
-    """Get or update UI preferences (selected model, language, etc.)"""
+    """Get or update UI preferences (web search toggle, selected model, language, etc.)"""
     prefs_path = os.path.join(DATA_DIR, 'preferences.json')
     
     if request.method == 'POST':
         data = request.json
         try:
+            # Load existing preferences
+            prefs = {}
+            if os.path.exists(prefs_path):
+                with open(prefs_path, 'r') as f:
+                    prefs = json.load(f)
+            
+            # Update with new data
+            prefs.update(data)
+            
+            # Save
             with open(prefs_path, 'w') as f:
-                json.dump(data, f, indent=4)
-            return jsonify({"success": True})
+                json.dump(prefs, f, indent=4)
+            return jsonify({"success": True, "preferences": prefs})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
     
+    # GET - return current preferences
+    try:
+        if os.path.exists(prefs_path):
+            with open(prefs_path, 'r') as f:
+                return jsonify(json.load(f))
+        return jsonify({})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     # GET
     try:
         if os.path.exists(prefs_path):
@@ -391,7 +560,7 @@ def list_models():
 
 @app.route('/api/system_stats')
 def system_stats():
-    """Get system statistics"""
+    """Get system statistics - no console logging"""
     cpu = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory().percent
     gpu, gpu_temp, vram = 0, 0, 0
@@ -416,9 +585,17 @@ def system_stats():
 
 @app.route('/api/chats', methods=['GET'])
 def list_chats_route():
-    """List all chat sessions"""
+    """List all chat sessions (text chats only by default)"""
     search_query = request.args.get('search')
-    chats = get_all_chats(search_query)
+    # Default to text chats only (exclude voice chats)
+    chats = get_all_chats(search_query, text_only=True)
+    return jsonify(chats)
+
+@app.route('/api/voice_chats', methods=['GET'])
+def list_voice_chats_route():
+    """List all voice chat sessions (voice chats only)"""
+    search_query = request.args.get('search')
+    chats = get_all_chats(search_query, voice_only=True)
     return jsonify(chats)
 
 @app.route('/api/chats/<session_id>', methods=['GET', 'DELETE'])
@@ -436,6 +613,31 @@ def chat_session_route(session_id):
     if chat:
         return jsonify(chat)
     return jsonify({"error": "Not found"}), 404
+
+@app.route('/api/chats/<session_id>/save_partial', methods=['POST'])
+def save_partial_response(session_id):
+    """Save partial response when generation is stopped"""
+    try:
+        data = request.json
+        content = data.get('content', '')
+        model = data.get('model', 'unknown')
+        
+        # Load existing session
+        existing = load_chat_session(session_id)
+        if existing:
+            history = existing['messages']
+            # Add partial response with marker
+            history.append({
+                "role": "assistant",
+                "content": content,
+                "model": model,
+                "_stopped": True
+            })
+            save_chat_session(session_id, history)
+            return jsonify({"success": True})
+        return jsonify({"error": "Session not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -511,6 +713,105 @@ def transcribe_preload():
         print(f"Error preloading Whisper: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route('/api/transcribe_audio', methods=['POST'])
+def transcribe_audio():
+    """Transcribe audio from chat page voice recording - uses same logic as VOX Core (NO FFMPEG)"""
+    try:
+        print("[STT] Transcribe audio endpoint called")
+        from POTATO.components.vocal_tools.realtime_stt import get_whisper_pipeline
+        import numpy as np
+        import io
+        
+        if 'audio' not in request.files:
+            print("[STT] Error: No audio file in request")
+            return jsonify({"error": "No audio file provided"}), 400
+        
+        audio_file = request.files['audio']
+        language_mode = request.form.get('language_mode', 'translate-en')
+        print(f"[STT] Received audio file, language_mode: {language_mode}")
+        
+        # Read audio bytes
+        audio_bytes = audio_file.read()
+        print(f"[STT] Audio size: {len(audio_bytes)} bytes")
+        
+        try:
+            # Try scipy wavfile first (handles WAV directly - same as VOX Core)
+            from scipy.io import wavfile
+            sample_rate, audio_data = wavfile.read(io.BytesIO(audio_bytes))
+            print(f"[STT] Parsed WAV: {sample_rate}Hz, shape: {audio_data.shape}")
+            
+            # Convert to float32 [-1, 1]
+            if audio_data.dtype == np.int16:
+                audio_data = audio_data.astype(np.float32) / 32768.0
+            elif audio_data.dtype == np.int32:
+                audio_data = audio_data.astype(np.float32) / 2147483648.0
+            else:
+                audio_data = audio_data.astype(np.float32)
+        except Exception as wav_error:
+            print(f"[STT] WAV parsing failed: {wav_error}")
+            return jsonify({"error": "Failed to parse audio. Browser must send WAV format."}), 400
+        
+        # Get Whisper pipeline (loads model if needed)
+        print("[STT] Getting Whisper pipeline...")
+        pipe = get_whisper_pipeline()
+        
+        # Ensure audio is float32 mono
+        if audio_data.ndim > 1:
+            audio_data = audio_data.mean(axis=1)  # Convert to mono
+        audio_data = audio_data.astype(np.float32)
+        
+        # Resample to 16kHz if needed (Whisper expects 16kHz)
+        if sample_rate != 16000:
+            print(f"[STT] Resampling from {sample_rate}Hz to 16000Hz")
+            audio_data = audio_data[::int(sample_rate / 16000)]
+        
+        # Transcribe directly from numpy array (NO FILE, NO FFMPEG - same as VOX Core)
+        print(f"[STT] Processing with mode: {language_mode}")
+        
+        # Handle language mode
+        if language_mode == 'translate-en':
+            # Translate to English (Whisper's translate task)
+            result = pipe(
+                audio_data,
+                generate_kwargs={
+                    "task": "translate"
+                }
+            )
+        elif language_mode == 'auto':
+            # Auto-detect and transcribe in original language
+            result = pipe(
+                audio_data,
+                generate_kwargs={
+                    "task": "transcribe"
+                }
+            )
+        else:
+            # Force specific language (e.g., 'tr', 'fr', etc.)
+            result = pipe(
+                audio_data,
+                generate_kwargs={
+                    "language": language_mode,
+                    "task": "transcribe"
+                }
+            )
+        
+        text = result.get("text", "").strip()
+        detected_lang = result.get("chunks", [{}])[0].get("language", "unknown") if "chunks" in result else "unknown"
+        print(f"[STT] Result: {text} (detected: {detected_lang})")
+        
+        return jsonify({
+            "text": text,
+            "language_mode": language_mode,
+            "detected_language": detected_lang,
+            "success": bool(text)
+        })
+            
+    except Exception as e:
+        print(f"[STT] Exception: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/stop', methods=['POST'])
 def stop_inference():
     """Stop ongoing inference"""
@@ -565,6 +866,7 @@ def chat_stream():
     rag_folder = data.get('context_folder', '')
     
     # Load or create session
+    existing = None
     if not session_id:
         session_id = str(uuid.uuid4())
         history = []
@@ -601,53 +903,125 @@ def chat_stream():
     # Add user message to history
     history.append({"role": "user", "content": user_input})
     
+    # IMMEDIATELY save session with placeholder title so it appears in chat list
+    # This will be updated with AI-generated title at end of stream
+    if not existing:
+        # New chat - save immediately with first message preview as placeholder
+        placeholder_title = user_input[:27] + "..." if len(user_input) > 27 else user_input
+        save_chat_session(session_id, history, title=placeholder_title)
+        print(f"[CHAT] New session created immediately: {session_id}")
+    
     def generate():
         try:
-            # Call streaming function with thinking enabled
-            stream = simple_stream_test(history, stream=True, think=True)
+            # Send session_id immediately so frontend can update chat list
+            yield f"data: {json.dumps({'session_id': session_id})}\n\n"
+            
+            # Start/stop MCP server based on web search setting AND stealth mode
+            if web_search_enabled and not stealth_mode:
+                start_mcp_server()
+            else:
+                stop_mcp_server()
+            
+            # Debug: Log which model is being used
+            print(f"[DEBUG] Model: {model}, web_search: {web_search_enabled}, stealth: {stealth_mode}")
+            
+            # Call streaming function (generator format from main.py)
+            # simple_stream_test yields {'content': ..., 'tool': ...} dicts
+            stream = simple_stream_test(
+                history, 
+                model=model, 
+                enable_search=web_search_enabled,
+                stealth_mode=stealth_mode
+            )
             
             accumulated_content = ""
+            accumulated_thinking = ""
+            in_think_tags = False
+            thinking_open_tag = '<think>'  # Default
+            thinking_close_tag = '</think>'  # Default
             
+            # Stream format from main.py: {'metadata': {...}}, {'content': text}, {'tool': status}, or {'thinking': text}
             for chunk in stream:
-                # Ollama streaming format: chunk contains 'message' dict with 'content', 'role', etc.
-                if 'message' in chunk:
-                    message = chunk['message']
+                # Handle metadata (sent at start with model-specific tags)
+                if 'metadata' in chunk:
+                    metadata = chunk['metadata']
+                    tags = metadata.get('thinking_tags', {'open': '<think>', 'close': '</think>'})
+                    thinking_open_tag = tags.get('open', '<think>')
+                    thinking_close_tag = tags.get('close', '</think>')
+                    yield f"data: {json.dumps({'metadata': metadata})}\n\n"
+                    continue
+                
+                # Handle tool status
+                if 'tool' in chunk:
+                    yield f"data: {json.dumps({'tool_status': chunk['tool']})}\n\n"
+                    continue
+                
+                # Handle thinking (direct from model or parsed from tags)
+                if 'thinking' in chunk:
+                    accumulated_thinking += chunk['thinking']
+                    yield f"data: {json.dumps({'thinking': chunk['thinking']})}\n\n"
+                    continue
+                
+                # Handle content with dynamic thinking tag parsing
+                if 'content' in chunk:
+                    content_bit = chunk['content']
                     
-                    # Handle content
-                    if 'content' in message:
-                        content_bit = message['content']
+                    # Only parse tags if model has them defined
+                    if thinking_open_tag and thinking_close_tag:
+                        # Check if we're entering/exiting think tags
+                        if thinking_open_tag in content_bit:
+                            in_think_tags = True
+                            # Split content before and after open tag
+                            parts = content_bit.split(thinking_open_tag, 1)
+                            if parts[0]:  # Content before opening tag
+                                accumulated_content += parts[0]
+                                yield f"data: {json.dumps({'content': parts[0], 'model': model})}\n\n"
+                            content_bit = parts[1] if len(parts) > 1 else ""
+                        
+                        if thinking_close_tag in content_bit:
+                            in_think_tags = False
+                            # Split thinking and content after close tag
+                            parts = content_bit.split(thinking_close_tag, 1)
+                            if parts[0]:  # Thinking content
+                                accumulated_thinking += parts[0]
+                                yield f"data: {json.dumps({'thinking': parts[0]})}\n\n"
+                            if len(parts) > 1 and parts[1]:  # Content after closing tag
+                                accumulated_content += parts[1]
+                                yield f"data: {json.dumps({'content': parts[1], 'model': model})}\n\n"
+                        elif in_think_tags:
+                            # We're inside think tags, accumulate thinking
+                            accumulated_thinking += content_bit
+                            yield f"data: {json.dumps({'thinking': content_bit})}\n\n"
+                        else:
+                            # Regular content outside think tags
+                            accumulated_content += content_bit
+                            yield f"data: {json.dumps({'content': content_bit, 'model': model})}\n\n"
+                    else:
+                        # No thinking tags defined, all content is regular content
                         accumulated_content += content_bit
                         yield f"data: {json.dumps({'content': content_bit, 'model': model})}\n\n"
-                    
-                    # Handle tool calls
-                    if 'tool_calls' in message:
-                        tool_calls = message['tool_calls']
-                        for tool in tool_calls:
-                            fn_name = tool.get('function', {}).get('name', '')
-                            args = tool.get('function', {}).get('arguments', {})
-                            yield f"data: {json.dumps({'tool_status': f'Calling {fn_name}...'})}\n\n"
-                            
-                            # Execute tool
-                            if fn_name in TOOL_REGISTRY:
-                                try:
-                                    if isinstance(args, str):
-                                        tool_args = json.loads(args)
-                                    else:
-                                        tool_args = args
-                                    
-                                    result = TOOL_REGISTRY[fn_name](**tool_args)
-                                    yield f"data: {json.dumps({'tool_result': str(result)})}\n\n"
-                                except Exception as e:
-                                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                
-                # Check if done
-                if chunk.get('done', False):
-                    break
             
-            # Save history
-            if accumulated_content:
-                history.append({"role": "assistant", "content": accumulated_content})
-                save_chat_session(session_id, history)
+            # Save history with metadata (thinking/tools visible but not sent back to model)
+            if accumulated_content or accumulated_thinking:
+                # Save the assistant message with content AND model name
+                assistant_msg = {
+                    "role": "assistant", 
+                    "content": accumulated_content,
+                    "model": model  # Store which model generated this
+                }
+                
+                # Add metadata for UI rendering (thinking, tools) but not sent back to model
+                if accumulated_thinking:
+                    assistant_msg["_thinking"] = accumulated_thinking
+                
+                history.append(assistant_msg)
+                
+                # Save with AI-generated title if this was a new chat
+                # (The title generation logic in save_chat_session will create a proper title)
+                if not existing:
+                    save_chat_session(session_id, history)  # Will generate AI title
+                else:
+                    save_chat_session(session_id, history)  # Will preserve existing title
             
             # End stream
             yield f"data: {json.dumps({'session_id': session_id, 'done': True})}\n\n"
@@ -657,9 +1031,156 @@ def chat_stream():
     
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
 
+@app.route('/api/vox_stream', methods=['POST'])
+def vox_stream():
+    """Real-time voice conversation with streaming AI responses"""
+    def generate():
+        try:
+            data = request.json
+            user_text = data.get('text')
+            session_id = data.get('session_id') or str(uuid.uuid4())
+            language = data.get('language', 'en')
+            
+            if not user_text:
+                yield f"data: {json.dumps({'error': 'No text provided'})}\n\n"
+                return
+            
+            settings = load_settings()
+            vox_model = settings.get('voice_config', {}).get('VOX_MODEL', 'dolphin-llama3:8b')
+            
+            # NOTE: Interrupt word detection removed from backend - handled in frontend only
+            # This prevents legitimate sentences containing these words from being blocked
+            # (e.g., "mate let me give it another shot" shouldn't be considered an interrupt)
+            
+            # Load or create session
+            existing = load_chat_session(session_id)
+            history = existing['messages'] if existing else []
+            
+            # Add TTS-friendly system prompt
+            if not history:
+                system_prompt = settings.get('voice_config', {}).get('TTS_SYSTEM_PROMPT', 
+                    "You are a conversational assistant. Respond naturally without markdown or formatting. Keep responses concise and spoken-language friendly.")
+                history.append({"role": "system", "content": system_prompt})
+            
+            history.append({"role": "user", "content": user_text})
+            
+            # Auto-save immediately after user message to prevent data loss
+            temp_title = f"Voice Chat - {user_text[:30]}..."
+            save_chat_session(session_id, history, title=temp_title, is_voice_chat=True)
+            
+            # Yield session ID first
+            yield f"data: {json.dumps({'session_id': session_id, 'user_text': user_text})}\n\n"
+            
+            # Stream AI response
+            accumulated_response = ""
+            for chunk in simple_stream_test(history, model=vox_model, enable_search=False, stealth_mode=False):
+                if 'content' in chunk:
+                    accumulated_response += chunk['content']
+                    yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
+                elif 'thinking' in chunk:
+                    yield f"data: {json.dumps({'thinking': chunk['thinking']})}\n\n"
+                elif 'tool' in chunk:
+                    yield f"data: {json.dumps({'tool_status': chunk['tool']})}\n\n"
+                elif 'error' in chunk:
+                    yield f"data: {json.dumps({'error': chunk['error']})}\n\n"
+            
+            # Save conversation with voice chat flag
+            if accumulated_response:
+                history.append({"role": "assistant", "content": accumulated_response, "model": vox_model})
+                saved_data = save_chat_session(session_id, history, is_voice_chat=True)
+                session_id = saved_data['id']  # Update session_id with vox_ prefix if added
+            
+            # Signal completion with TTS trigger
+            yield f"data: {json.dumps({'done': True, 'response': accumulated_response, 'speak': True, 'language': language, 'session_id': session_id})}\n\n"
+            
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+@app.route('/api/vox_speak', methods=['POST'])
+def vox_speak():
+    """Speak text using TTS"""
+    try:
+        data = request.json
+        text = data.get('text')
+        language = data.get('language', 'en')
+        
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
+        
+        # Use appropriate TTS based on language
+        if language == 'en':
+            from POTATO.components.vocal_tools.clonevoice_turbo import speak_sentences_grouped
+            speak_sentences_grouped(text)
+        else:
+            from POTATO.components.vocal_tools.clonevoice_multilanguage import speak_multilingual
+            speak_multilingual(text, language=language)
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/vox_stop', methods=['POST'])
+@app.route('/api/vox_stop_speak', methods=['POST'])
+def vox_stop():
+    """Stop current TTS playback - MUST NEVER crash the app"""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_turbo import stop_current_tts
+        stop_current_tts()
+        return jsonify({"success": True})
+    except ImportError as e:
+        print(f"[VOX STOP] Import error (TTS not loaded): {e}")
+        return jsonify({"success": True, "warning": "TTS module not loaded"})
+    except Exception as e:
+        print(f"[VOX STOP] Error (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
+        # Return success anyway - don't crash app for TTS issues
+        return jsonify({"success": True, "warning": str(e)})
+
+@app.route('/api/stop_model', methods=['POST'])
+def stop_model():
+    """Stop currently running Ollama model"""
+    try:
+        data = request.json
+        model_name = data.get('model') if data else None
+        if not model_name:
+            # Try to get from settings
+            settings = load_settings()
+            model_name = settings.get('model', 'llama3.2:3b')
+        
+        import ollama
+        ollama.stop(model_name)
+        print(f"[MODEL] Stopped {model_name}")
+        return jsonify({"success": True, "model": model_name})
+    except Exception as e:
+        print(f"[MODEL] Error stopping: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/tts_unload', methods=['POST'])
+def tts_unload():
+    """Unload TTS model from VRAM"""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_turbo import unload_model
+        unload_model()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/stt_unload', methods=['POST'])
+def stt_unload():
+    """Unload STT model from VRAM"""
+    try:
+        from POTATO.components.vocal_tools.audioflow import unload_whisper
+        unload_whisper()
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/vox_core', methods=['POST'])
 def vox_core():
-    """Voice conversation endpoint"""
+    """Legacy voice conversation endpoint (deprecated - use vox_stream)"""
     data = request.json
     audio_path = data.get('audio_path')
     session_id = data.get('session_id', str(uuid.uuid4()))
@@ -676,9 +1197,10 @@ def vox_core():
     user_text = stt_result['text']
     
     # Check for interrupt words
-    interrupt_words = ['okay thanks', 'stop', 'enough', 'thank you', 'bye', 'done']
+    interrupt_words = ['okay thanks', 'alright stop', 'okay enough', 'thank you', 'bye', 'done', 'shut up']
     if any(word in user_text.lower() for word in interrupt_words):
-        stop_tts()
+        from POTATO.components.vocal_tools.clonevoice_turbo import stop_current_tts
+        stop_current_tts()
         return jsonify({"status": "interrupted", "text": user_text})
     
     # Load or create session
@@ -693,8 +1215,7 @@ def vox_core():
     
     history.append({"role": "user", "content": user_text})
     
-    # Get response from model (non-streaming for voice)
-    # TODO: Implement actual ollama call
+    # Get response from model
     response_text = "I heard you say: " + user_text
     
     history.append({"role": "assistant", "content": response_text})
@@ -702,7 +1223,8 @@ def vox_core():
     
     # Speak response using specified language
     language = data.get('language', 'en')
-    speak_text(response_text, language=language)
+    from POTATO.components.vocal_tools.audioflow import speak
+    speak(response_text, language=language)
     
     return jsonify({
         "session_id": session_id,
@@ -712,5 +1234,230 @@ def vox_core():
         "status": "completed"
     })
 
+@app.route('/api/audio_devices', methods=['GET'])
+def get_audio_devices():
+    """Get list of available audio input devices"""
+    try:
+        from POTATO.components.vocal_tools.realtime_stt import list_audio_devices, load_preferences
+        
+        devices = list_audio_devices()
+        prefs = load_preferences()
+        
+        return jsonify({
+            "devices": devices,
+            "selected_device": prefs.get('audio_device_index'),
+            "selected_device_name": prefs.get('audio_device_name')
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/whisper_status', methods=['GET'])
+def whisper_status():
+    """Check if Whisper is loaded and trigger loading if needed"""
+    try:
+        from POTATO.components.vocal_tools.audioflow import _get_whisper_pipeline
+        
+        print("[WHISPER] Loading Whisper pipeline...")
+        # This will load Whisper if not already loaded
+        pipeline = _get_whisper_pipeline()
+        print("[WHISPER] Whisper pipeline loaded successfully")
+        
+        return jsonify({
+            "status": "ready",
+            "loaded": True
+        })
+    except Exception as e:
+        import traceback
+        print(f"[WHISPER ERROR] Failed to load: {str(e)}")
+        traceback.print_exc()
+        return jsonify({"error": str(e), "loaded": False}), 500
+
+@app.route('/api/tts_load_turbo', methods=['POST'])
+def tts_load_turbo():
+    """Load English TTS model (Chatterbox Turbo)"""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_turbo import _get_model
+        
+        # This will load the model if not already loaded
+        model = _get_model()
+        
+        return jsonify({
+            "status": "ready",
+            "model": "turbo",
+            "loaded": True
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "loaded": False}), 500
+
+@app.route('/api/tts_load_multilingual', methods=['POST'])
+def tts_load_multilingual():
+    """Load multilingual TTS model"""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_multilanguage import _get_multilingual_model
+        
+        # This will load the model if not already loaded
+        model = _get_multilingual_model()
+        
+        return jsonify({
+            "status": "ready",
+            "model": "multilingual",
+            "loaded": True
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "loaded": False}), 500
+
+@app.route('/api/detect_audio_device', methods=['POST'])
+def detect_audio_device():
+    """Auto-detect working audio input device"""
+    try:
+        from POTATO.components.vocal_tools.realtime_stt import detect_working_device, save_preferences, load_preferences
+        
+        device = detect_working_device()
+        if device:
+            prefs = load_preferences()
+            prefs['audio_device_index'] = device['index']
+            prefs['audio_device_name'] = device['name']
+            save_preferences(prefs)
+            
+            return jsonify({
+                "success": True,
+                "device": device
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "No working audio device found"
+            }), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/set_audio_device', methods=['POST'])
+def set_audio_device():
+    """Set preferred audio input device"""
+    try:
+        from POTATO.components.vocal_tools.realtime_stt import save_preferences, load_preferences
+        
+        data = request.json
+        device_index = data.get('device_index')
+        device_name = data.get('device_name')
+        
+        prefs = load_preferences()
+        prefs['audio_device_index'] = device_index
+        prefs['audio_device_name'] = device_name
+        save_preferences(prefs)
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/transcribe_realtime', methods=['POST'])
+def transcribe_realtime():
+    """Transcribe audio chunk in real-time using WAV from browser (NO FFMPEG)"""
+    try:
+        from POTATO.components.vocal_tools.realtime_stt import get_whisper_pipeline
+        import numpy as np
+        import io
+        
+        # Get audio data from request
+        audio_file = request.files.get('audio')
+        language_mode = request.form.get('language_mode', request.form.get('language', 'auto'))
+        
+        if not audio_file:
+            return jsonify({"error": "No audio data"}), 400
+        
+        # Read audio bytes
+        audio_bytes = audio_file.read()
+        
+        try:
+            # Try scipy wavfile first (handles WAV directly)
+            from scipy.io import wavfile
+            sample_rate, audio_data = wavfile.read(io.BytesIO(audio_bytes))
+            # Convert to float32 [-1, 1]
+            if audio_data.dtype == np.int16:
+                audio_data = audio_data.astype(np.float32) / 32768.0
+            elif audio_data.dtype == np.int32:
+                audio_data = audio_data.astype(np.float32) / 2147483648.0
+            else:
+                audio_data = audio_data.astype(np.float32)
+        except Exception as wav_error:
+            print(f"WAV parsing failed: {wav_error}")
+            return jsonify({"error": "Failed to parse audio. Please check microphone."}), 400
+        
+        # Get Whisper pipeline (loads model if needed)
+        pipe = get_whisper_pipeline()
+        
+        # Ensure audio is float32 mono
+        if audio_data.ndim > 1:
+            audio_data = audio_data.mean(axis=1)  # Convert to mono
+        audio_data = audio_data.astype(np.float32)
+        
+        # Resample to 16kHz if needed (Whisper expects 16kHz)
+        if sample_rate != 16000:
+            # Simple decimation for speed
+            audio_data = audio_data[::int(sample_rate / 16000)]
+        
+        # Transcribe directly from numpy array (NO FILE, NO FFMPEG)
+        # Handle language mode (translate to English vs transcribe in original)
+        if language_mode == 'translate-en':
+            result = pipe(audio_data, generate_kwargs={"task": "translate"})
+        elif language_mode == 'auto':
+            result = pipe(audio_data, generate_kwargs={"task": "transcribe"})
+        else:
+            result = pipe(audio_data, generate_kwargs={"language": language_mode, "task": "transcribe"})
+        
+        text = result.get("text", "").strip()
+        
+        return jsonify({
+            "text": text,
+            "success": bool(text)
+        })
+            
+    except Exception as e:
+        print(f"Transcription error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+# Register cleanup handlers
+atexit.register(cleanup_on_exit)
+
+def signal_handler(sig, frame):
+    """Handle SIGINT (Ctrl+C) and SIGTERM"""
+    print("\nShutting down gracefully...")
+    cleanup_on_exit()
+    exit(0)
+
+def cleanup_handler():
+    """Ensure models are unloaded on exit"""
+    print("\n[CLEANUP] Shutting down gracefully...")
+    try:
+        stop_tts()
+        unload_tts_models()
+        unload_whisper_model()
+        unload_model()
+        unload_vox()
+        stop_inference()
+        
+    except:
+        pass
+    sys.exit(0)
+
+
+# Register cleanup
+atexit.register(cleanup_handler)
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    try:
+        app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    except KeyboardInterrupt:
+        print("\nKeyboard interrupt received...")
+        cleanup_on_exit()
+        cleanup_handler()
+    finally:
+        cleanup_on_exit()
+        cleanup_handler()
+

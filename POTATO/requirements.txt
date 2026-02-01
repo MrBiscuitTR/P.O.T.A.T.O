@@ -10,7 +10,16 @@ beautifulsoup4
 chatterbox-tts
 numpy
 matplotlib
+scipy
+soundfile
+pydub
 sounddevice>=0.4.6
+weaviate-client>=4.0.0
+fastmcp
+transformers
+open3d
+pdf2image
+python-dotenv
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.9.1
 torchvision==0.24.1

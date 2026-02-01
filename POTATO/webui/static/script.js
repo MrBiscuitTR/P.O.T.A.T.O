@@ -4,14 +4,27 @@ let currentSessionId = null;
 let mediaRecorder = null;
 let audioChunks = [];
 let currentModel = 'gpt-oss:20b';
-let voxLanguage = 'en';
+let voxLanguage = 'en';  // Shared with vox.js
 let webSearchEnabled = false;
 let stealthMode = false;
 let uploadedFiles = [];
 let settings = {};
 let currentSettingsTab = 'core';
-let voxSessionId = null;
+let configDescriptions = {}; // Descriptions from config.env.txt
+let isGenerating = false; // Track if AI is currently generating
+
+// Load config descriptions on page load
+async function loadConfigDescriptions() {
+    try {
+        const response = await fetch('/api/settings/descriptions');
+        configDescriptions = await response.json();
+    } catch (error) {
+        console.error('Error loading config descriptions:', error);
+    }
+}
 let isRecording = false;
+let autoScrollEnabled = true;  // Auto-scroll by default
+// Note: voxSessionId and other VOX-specific variables are in vox.js
 
 // Configure marked.js for markdown rendering
 if (typeof marked !== 'undefined') {
@@ -31,6 +44,7 @@ if (typeof marked !== 'undefined') {
 document.addEventListener('DOMContentLoaded', () => {
     loadPreferences();  // Load saved preferences first
     loadModels();
+    loadConfigDescriptions(); // Load descriptions from config.env.txt
     loadSettings();
     updateStats();
     loadChatList();
@@ -47,7 +61,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('chat-input').addEventListener('keypress', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            sendMessage();
+            if (!isGenerating) {
+                sendMessage();
+            }
         }
     });
     
@@ -72,6 +88,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('hamburger-left').addEventListener('click', () => {
         document.getElementById('left-sidebar').classList.toggle('mobile-open');
     });
+    
+    // Auto-scroll detection for chat window
+    const chatWindow = document.getElementById('chat-window');
+    if (chatWindow) {
+        chatWindow.addEventListener('scroll', () => {
+            const isAtBottom = chatWindow.scrollHeight - chatWindow.scrollTop <= chatWindow.clientHeight + 50;
+            autoScrollEnabled = isAtBottom;
+        });
+    }
 });
 
 // --- PREFERENCES ---
@@ -193,11 +218,8 @@ function switchTab(tabId) {
         buttons[btnMap[tabId]].classList.add('active');
     }
     
-    // Auto-start VOX when tab opens
-    if (tabId === 'vox-core') {
-        preloadWhisper();
-        autoStartVoxCore();
-    }
+    // VOX Core now uses new VOX module (vox.js) - no auto-start needed
+    // VOX.init() is called on page load in index.html
     
     // Close mobile sidebar when switching tabs
     closeMobileSidebar();
@@ -221,10 +243,12 @@ async function sendMessage() {
     const input = document.getElementById('chat-input');
     const message = input.value.trim();
     
-    if (!message) return;
+    if (!message || isGenerating) return;
     
+    isGenerating = true;
     input.value = '';
     input.style.height = 'auto';
+    input.disabled = true; // Disable input during generation
     
     // Toggle send/stop buttons
     const sendBtn = document.getElementById('send-btn');
@@ -270,10 +294,17 @@ async function sendMessage() {
                 if (line.startsWith('data: ')) {
                     try {
                         const data = JSON.parse(line.slice(6));
+                        console.log('SSE data received:', data);  // DEBUG
                         updateBotMessage(botMsgId, data);
                         
                         if (data.session_id) {
+                            const wasNewChat = !currentSessionId;
                             currentSessionId = data.session_id;
+                            // Refresh chat list immediately when new chat is created
+                            if (wasNewChat) {
+                                console.log('[CHAT] New session created, refreshing chat list');
+                                loadChatList();
+                            }
                         }
                         
                         // Check if stream is done
@@ -301,6 +332,9 @@ async function sendMessage() {
 }
 
 function resetButtonsAfterInference() {
+    isGenerating = false;
+    const input = document.getElementById('chat-input');
+    if (input) input.disabled = false;
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-inference-btn');
     sendBtn.style.display = 'flex';
@@ -332,7 +366,7 @@ function createBotPlaceholder(id) {
         <div id="${id}-content" class="markdown-content">Thinking...</div>
     `;
     chatWindow.appendChild(msgDiv);
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    scrollToBottom();
 }
 
 function toggleThinking(id) {
@@ -345,27 +379,95 @@ function toggleThinking(id) {
 
 function updateBotMessage(id, data) {
     const msgDiv = document.getElementById(id);
-    if (!msgDiv) return;
+    if (!msgDiv) {
+        console.error(`Message div not found: ${id}`);
+        return;
+    }
     
     const contentDiv = document.getElementById(`${id}-content`);
     const thinkingSection = document.getElementById(`${id}-thinking-section`);
     const thinkingContent = document.getElementById(`${id}-thinking-content`);
     
+    if (!contentDiv || !thinkingSection || !thinkingContent) {
+        console.error(`Missing elements for ${id}`, { contentDiv, thinkingSection, thinkingContent });
+        return;
+    }
+    
+    // Handle metadata (model tags, settings)
+    if (data.metadata) {
+        // Store metadata for this message
+        if (!msgDiv.dataset.metadata) {
+            msgDiv.dataset.metadata = JSON.stringify(data.metadata);
+        }
+        // Update model badge with current model
+        const modelBadge = msgDiv.querySelector('.model-badge');
+        if (modelBadge && data.metadata.model) {
+            modelBadge.textContent = data.metadata.model;
+        }
+        return; // Metadata doesn't need further processing
+    }
+    
+    // Update model badge if model data is sent (for streaming)
+    if (data.model) {
+        const modelBadge = msgDiv.querySelector('.model-badge');
+        if (modelBadge) {
+            modelBadge.textContent = data.model;
+        }
+    }
+    
     if (data.thinking) {
+        console.log('[THINKING] Received thinking data:', data.thinking.substring(0, 50));
         // Show thinking section
         thinkingSection.style.display = 'block';
-        const thinkingP = document.createElement('p');
-        thinkingP.textContent = data.thinking;
-        thinkingContent.appendChild(thinkingP);
+        
+        // Accumulate thinking in a single element instead of creating many <p> tags
+        let thinkingText = thinkingContent.querySelector('.thinking-text');
+        if (!thinkingText) {
+            thinkingText = document.createElement('div');
+            thinkingText.className = 'thinking-text';
+            thinkingContent.appendChild(thinkingText);
+            
+            // Add auto-scroll behavior
+            let autoScrollEnabled = true;
+            let userScrolling = false;
+            let scrollTimeout;
+            
+            thinkingContent.addEventListener('scroll', () => {
+                clearTimeout(scrollTimeout);
+                userScrolling = true;
+                
+                // Check if near bottom (within 50px)
+                const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 50;
+                autoScrollEnabled = isNearBottom;
+                
+                // Re-enable auto-scroll after user stops scrolling
+                scrollTimeout = setTimeout(() => {
+                    userScrolling = false;
+                }, 150);
+            });
+            
+            // Store scroll state on element
+            thinkingContent._autoScroll = true;
+        }
+        
+        thinkingText.textContent += data.thinking;
+        
+        // Auto-scroll if enabled and not collapsed
+        if (!thinkingContent.classList.contains('collapsed')) {
+            const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 50;
+            if (thinkingContent._autoScroll !== false && isNearBottom) {
+                setTimeout(() => {
+                    thinkingContent.scrollTop = thinkingContent.scrollHeight;
+                }, 0);
+            }
+        }
     }
     
     if (data.tool_status) {
-        // Show tool being called
-        thinkingSection.style.display = 'block';
-        const toolDiv = document.createElement('div');
-        toolDiv.className = 'tool-info';
-        toolDiv.innerHTML = `<i class="fas fa-tools"></i> ${data.tool_status}`;
-        thinkingContent.appendChild(toolDiv);
+        // Tool status is backend info - do NOT display to user
+        // Tools should be handled by the backend silently
+        console.log('[Tool]', data.tool_status);
+        // Removed display logic - tools are not user-facing
     }
     
     if (data.tool_result) {
@@ -400,7 +502,9 @@ function updateBotMessage(id, data) {
         contentDiv.dataset.rawContent += data.content;
         
         // Render as markdown
-        renderMarkdown(contentDiv, contentDiv.dataset.rawContent);
+        if (contentDiv && contentDiv.dataset.rawContent) {
+            renderMarkdown(contentDiv, contentDiv.dataset.rawContent);
+        }
     }
     
     if (data.error) {
@@ -416,29 +520,48 @@ function updateBotMessage(id, data) {
     }
     
     const chatWindow = document.getElementById('chat-window');
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    if (autoScrollEnabled) {
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+}
+
+function scrollToBottom() {
+    const chatWindow = document.getElementById('chat-window');
+    if (autoScrollEnabled) {
+        chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
 }
 
 function renderMarkdown(element, text) {
+    if (!element) {
+        console.error('renderMarkdown: element is null');
+        return;
+    }
+    
     if (typeof marked === 'undefined') {
         element.textContent = text;
         return;
     }
     
-    element.innerHTML = marked.parse(text);
-    
-    // Add copy buttons to code blocks
-    element.querySelectorAll('pre code').forEach((block) => {
-        if (!block.parentElement.querySelector('.copy-btn')) {
-            const button = document.createElement('button');
-            button.className = 'copy-btn';
-            button.innerHTML = '<i class="fas fa-copy"></i>';
-            button.title = 'Copy code';
-            button.onclick = () => copyCode(button, block);
-            block.parentElement.style.position = 'relative';
-            block.parentElement.insertBefore(button, block);
-        }
-    });
+    try {
+        element.innerHTML = marked.parse(text);
+        
+        // Add copy buttons to code blocks
+        element.querySelectorAll('pre code').forEach((block) => {
+            if (!block.parentElement.querySelector('.copy-btn')) {
+                const button = document.createElement('button');
+                button.className = 'copy-btn';
+                button.innerHTML = '<i class="fas fa-copy"></i>';
+                button.title = 'Copy code';
+                button.onclick = () => copyCode(button, block);
+                block.parentElement.style.position = 'relative';
+                block.parentElement.insertBefore(button, block);
+            }
+        });
+    } catch (e) {
+        console.error('Error rendering markdown:', e);
+        element.textContent = text;
+    }
 }
 
 function copyCode(button, codeBlock) {
@@ -453,24 +576,73 @@ function copyCode(button, codeBlock) {
     });
 }
 
-function appendMessage(text, type) {
+function appendMessage(text, type, modelName = null) {
     const chatWindow = document.getElementById('chat-window');
     const msgDiv = document.createElement('div');
     msgDiv.className = `msg ${type}`;
     
+    const msgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    msgDiv.id = msgId;
+    
     if (type === 'bot' || type === 'assistant') {
-        msgDiv.classList.add('markdown-content');
-        renderMarkdown(msgDiv, text);
+        // Use provided model name or fall back to currentModel or Unknown
+        const displayModel = modelName || currentModel || 'Unknown Model';
+        
+        // Create structure with thinking section
+        msgDiv.innerHTML = `
+            <div class="model-badge">${displayModel}</div>
+            <div class="thinking-section" id="${msgId}-thinking-section" style="display: none;">
+              <div class="thinking-header" onclick="toggleThinking('${msgId}')">
+                <span><i class="fas fa-brain"></i> Thinking & Tools</span>
+                <span class="thinking-toggle" id="${msgId}-thinking-toggle"><i class="fas fa-chevron-down"></i></span>
+              </div>
+              <div class="thinking-content" id="${msgId}-thinking-content"></div>
+            </div>
+            <div class="markdown-content" id="${msgId}-content"></div>
+        `;
+        
+        // Append to DOM first so we can query the element
+        chatWindow.appendChild(msgDiv);
+        
+        // Now render markdown into the element
+        const contentDiv = document.getElementById(`${msgId}-content`);
+        if (contentDiv) {
+            renderMarkdown(contentDiv, text);
+        }
     } else {
         msgDiv.textContent = text;
+        chatWindow.appendChild(msgDiv);
     }
     
-    chatWindow.appendChild(msgDiv);
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    scrollToBottom();
+    
+    return msgId; // Return ID for later reference
 }
 
 async function stopInference() {
     try {
+        // Mark generation as stopped
+        isGenerating = false;
+        
+        // Save partial response before stopping
+        const chatWindow = document.getElementById('chat-window');
+        const lastBotMsg = chatWindow.querySelector('.msg.bot:last-child');
+        if (lastBotMsg && currentSessionId) {
+            const contentDiv = lastBotMsg.querySelector('.markdown-content');
+            if (contentDiv && contentDiv.textContent.trim()) {
+                // Save current state with [STOPPED] marker
+                const partialContent = contentDiv.textContent + ' [STOPPED]';
+                await fetch('/api/chats/' + currentSessionId + '/save_partial', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        content: partialContent,
+                        model: currentModel 
+                    })
+                });
+            }
+        }
+        
         await fetch('/api/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -479,6 +651,8 @@ async function stopInference() {
         appendMessage('Inference stopped', 'system');
     } catch (error) {
         console.error('Error stopping inference:', error);
+    } finally {
+        resetButtonsAfterInference();
     }
 }
 
@@ -540,18 +714,62 @@ async function loadChatList(query = '') {
         const response = await fetch(url);
         const chats = await response.json();
         
+        console.log('[CHAT LIST] Loaded', chats.length, 'chats');
+        
         const list = document.getElementById('chat-list');
         list.innerHTML = '';
         
+        // Remove old event listener if exists
+        const newList = list.cloneNode(false);
+        list.parentNode.replaceChild(newList, list);
+        
+        // Add event delegation for delete icons
+        newList.addEventListener('click', (e) => {
+            // Check if clicked element or its parent is the delete icon
+            const deleteIcon = e.target.closest('.delete-chat-icon');
+            if (deleteIcon) {
+                e.stopPropagation();
+                const chatId = deleteIcon.dataset.chatId;
+                const chatTitle = deleteIcon.dataset.chatTitle;
+                console.log('[DELETE ICON] Clicked via delegation! Chat ID:', chatId, 'Title:', chatTitle);
+                confirmDeleteChat(chatId, chatTitle, false);
+            }
+        });
+        
         chats.forEach(chat => {
+            console.log('[CHAT LIST] Creating item for:', chat.title);
+            
             const li = document.createElement('li');
-            li.textContent = chat.title;
-            li.onclick = () => loadSession(chat.id);
+            
+            const titleSpan = document.createElement('span');
+            titleSpan.textContent = chat.title;
+            titleSpan.onclick = () => loadSession(chat.id);
+            titleSpan.style.flex = '1';
+            titleSpan.style.cursor = 'pointer';
+            
+            const deleteIcon = document.createElement('i');
+            deleteIcon.className = 'fas fa-trash delete-chat-icon';
+            deleteIcon.title = 'Delete chat';
+            deleteIcon.style.color = '#ff4757';
+            deleteIcon.style.cursor = 'pointer';
+            deleteIcon.style.marginLeft = 'auto';
+            deleteIcon.style.padding = '5px';
+            // Store data attributes for event delegation
+            deleteIcon.dataset.chatId = chat.id;
+            deleteIcon.dataset.chatTitle = chat.title;
+            
+            console.log('[CHAT LIST] Created delete icon with data:', deleteIcon);
+            
+            li.appendChild(titleSpan);
+            li.appendChild(deleteIcon);
+            
             if (chat.id === currentSessionId) {
                 li.classList.add('active');
             }
-            list.appendChild(li);
+            newList.appendChild(li);
         });
+        
+        console.log('[CHAT LIST] Done rendering', chats.length, 'items with event delegation');
     } catch (error) {
         console.error('Error loading chat list:', error);
     }
@@ -569,7 +787,61 @@ async function loadSession(id) {
         
         chat.messages.forEach(msg => {
             if (msg.role !== 'system') {
-                appendMessage(msg.content, msg.role === 'user' ? 'user' : 'bot');
+                if (msg.role === 'user') {
+                    appendMessage(msg.content, 'user');
+                } else if (msg.role === 'assistant') {
+                    // Skip ONLY internal tool call messages (no content, just tool_calls)
+                    if (msg.tool_calls && msg.tool_calls.length > 0 && (!msg.content || msg.content.trim() === '')) {
+                        return; // Don't render empty assistant messages with tool_calls
+                    }
+                    
+                    // Skip assistant messages that are ONLY unexecuted tool call JSON
+                    if (msg.content && msg.content.trim().match(/^\{"name":\s*"potatool_\w+"/)) {
+                        return; // Don't render unexecuted tool call JSON
+                    }
+                    
+                    // If message has content, render it (even if it also has tool_calls)
+                    if (!msg.content || msg.content.trim() === '') {
+                        return; // Don't render empty messages
+                    }
+                    
+                    // Bot message - create ONE bubble with correct model label
+                    const msgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                    const msgDiv = document.createElement('div');
+                    msgDiv.className = 'msg bot';
+                    msgDiv.id = msgId;
+                    
+                    // Use model from message JSON, NOT currentModel
+                    const displayModel = msg.model || 'Unknown Model';
+                    
+                    // Check if there's thinking/tools metadata
+                    const hasThinking = msg._thinking && msg._thinking.trim();
+                    const hasTools = msg._tools && msg._tools.trim();
+                    const thinkingToolsContent = (hasThinking ? msg._thinking : '') + (hasTools ? msg._tools : '');
+                    
+                    msgDiv.innerHTML = `
+                        <div class="model-badge">${displayModel}</div>
+                        ${thinkingToolsContent ? `
+                        <div class="thinking-section" id="${msgId}-thinking-section" style="display: block;">
+                          <div class="thinking-header" onclick="toggleThinking('${msgId}')">
+                            <span><i class="fas fa-brain"></i> Thinking & Tools</span>
+                            <span class="thinking-toggle collapsed" id="${msgId}-thinking-toggle"><i class="fas fa-chevron-down"></i></span>
+                          </div>
+                          <div class="thinking-content collapsed" id="${msgId}-thinking-content">${thinkingToolsContent}</div>
+                        </div>
+                        ` : ''}
+                        <div class="markdown-content" id="${msgId}-content"></div>
+                    `;
+                    
+                    chatWindow.appendChild(msgDiv);
+                    
+                    // Render markdown content
+                    const contentDiv = document.getElementById(`${msgId}-content`);
+                    if (contentDiv) {
+                        renderMarkdown(contentDiv, msg.content);
+                    }
+                }
+                // Skip 'tool' role messages - they're internal
             }
         });
         
@@ -583,6 +855,12 @@ function startNewChat() {
     currentSessionId = null;
     document.getElementById('chat-window').innerHTML = '';
     uploadedFiles = [];
+    
+    // Remove active class from all chat items
+    const chatItems = document.querySelectorAll('#chat-list li');
+    chatItems.forEach(item => item.classList.remove('active'));
+    
+    // Reload chat list to reflect no active session
     loadChatList();
 }
 
@@ -644,25 +922,61 @@ function toggleVoiceRecording() {
 
 async function startVoiceRecording() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
+        // Request microphone access with specific constraints
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                sampleRate: 16000
+            }
+        });
+        
+        // Use WAV format which scipy can handle without ffmpeg (same as VOX Core)
+        const options = { mimeType: 'audio/wav' };
+        
+        // Fallback to webm if wav not supported
+        if (!MediaRecorder.isTypeSupported('audio/wav')) {
+            console.warn('WAV not supported by browser, using webm');
+            options.mimeType = 'audio/webm';
+        }
+        
+        mediaRecorder = new MediaRecorder(stream, options);
+        console.log('MediaRecorder format:', options.mimeType);
         audioChunks = [];
         
         mediaRecorder.ondataavailable = (event) => {
-            audioChunks.push(event.data);
+            if (event.data.size > 0) {
+                audioChunks.push(event.data);
+            }
         };
         
         mediaRecorder.onstop = async () => {
-            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-            await transcribeAudio(audioBlob);
+            const audioBlob = new Blob(audioChunks, { type: options.mimeType });
+            
+            // Convert WebM to WAV using Web Audio API (same as VOX Core - NO FFMPEG)
+            try {
+                const arrayBuffer = await audioBlob.arrayBuffer();
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+                const wavBlob = audioBufferToWav(audioBuffer);
+                await transcribeAudio(wavBlob);
+                audioContext.close();
+            } catch (error) {
+                console.error('Audio conversion error:', error);
+                // Fallback to original blob
+                await transcribeAudio(audioBlob);
+            }
+            
+            stream.getTracks().forEach(track => track.stop());
         };
         
         mediaRecorder.start();
         isRecording = true;
         document.getElementById('voice-overlay').classList.remove('hidden');
+        console.log('Voice recording started');
     } catch (error) {
         console.error('Error starting recording:', error);
-        alert('Could not access microphone');
+        alert('Could not access microphone. Please check permissions.');
     }
 }
 
@@ -675,12 +989,65 @@ function stopVoiceRecording() {
     }
 }
 
+// Convert AudioBuffer to WAV Blob (NO FFMPEG - same as VOX Core)
+function audioBufferToWav(audioBuffer) {
+    const numberOfChannels = audioBuffer.numberOfChannels;
+    const sampleRate = audioBuffer.sampleRate;
+    const format = 1; // PCM
+    const bitDepth = 16;
+    
+    // Interleave channels
+    let length = audioBuffer.length * numberOfChannels * 2;
+    let buffer = new ArrayBuffer(44 + length);
+    let view = new DataView(buffer);
+    
+    // Write WAV header
+    let offset = 0;
+    const writeString = (str) => {
+        for (let i = 0; i < str.length; i++) {
+            view.setUint8(offset++, str.charCodeAt(i));
+        }
+    };
+    
+    writeString('RIFF');
+    view.setUint32(offset, 36 + length, true); offset += 4;
+    writeString('WAVE');
+    writeString('fmt ');
+    view.setUint32(offset, 16, true); offset += 4;
+    view.setUint16(offset, format, true); offset += 2;
+    view.setUint16(offset, numberOfChannels, true); offset += 2;
+    view.setUint32(offset, sampleRate, true); offset += 4;
+    view.setUint32(offset, sampleRate * numberOfChannels * bitDepth / 8, true); offset += 4;
+    view.setUint16(offset, numberOfChannels * bitDepth / 8, true); offset += 2;
+    view.setUint16(offset, bitDepth, true); offset += 2;
+    writeString('data');
+    view.setUint32(offset, length, true); offset += 4;
+    
+    // Write interleaved PCM samples
+    for (let i = 0; i < audioBuffer.length; i++) {
+        for (let channel = 0; channel < numberOfChannels; channel++) {
+            let sample = audioBuffer.getChannelData(channel)[i];
+            sample = Math.max(-1, Math.min(1, sample));
+            sample = sample < 0 ? sample * 0x8000 : sample * 0x7FFF;
+            view.setInt16(offset, sample, true);
+            offset += 2;
+        }
+    }
+    
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
 async function transcribeAudio(audioBlob) {
     const formData = new FormData();
     formData.append('audio', audioBlob, 'recording.wav');
     
+    // Get language mode from voice overlay selector
+    const languageMode = document.getElementById('voice-language-mode')?.value || 'translate-en';
+    formData.append('language_mode', languageMode);
+    
     try {
-        const response = await fetch('/api/transcribe', {
+        // Use audioflow endpoint that handles webm properly
+        const response = await fetch('/api/transcribe_audio', {
             method: 'POST',
             body: formData
         });
@@ -696,14 +1063,14 @@ async function transcribeAudio(audioBlob) {
 }
 
 // --- VOX CORE ---
-let voxIsListening = false;
-let voxListenInterval = null;
+// Note: voxIsListening is managed by vox.js module
 let whisperPreloaded = false;
 
 async function preloadWhisper() {
     if (whisperPreloaded) return;
     
-    document.getElementById('vox-status').textContent = 'Loading Whisper model...';
+    const statusEl = document.getElementById('vox-status');
+    if (statusEl) statusEl.textContent = 'Loading Whisper model...';
     
     try {
         const response = await fetch('/api/transcribe_preload', { method: 'POST' });
@@ -711,6 +1078,7 @@ async function preloadWhisper() {
         
         if (data.success) {
             whisperPreloaded = true;
+            window.whisperPreloaded = true;
             console.log('Whisper model preloaded successfully');
         }
     } catch (error) {
@@ -718,6 +1086,25 @@ async function preloadWhisper() {
     }
 }
 
+async function unloadWhisperModel() {
+    try {
+        const response = await fetch('/api/unload_vox', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            whisperPreloaded = false;
+            window.whisperPreloaded = false;
+            window.whisperModelLoaded = false;
+            console.log('Whisper model unloaded');
+            alert('Speech-to-text model unloaded from VRAM');
+        }
+    } catch (error) {
+        console.error('Error unloading Whisper:', error);
+    }
+}
+
+// OLD VOX CODE - DISABLED (Using new VOX module in vox.js instead)
+/*
 async function autoStartVoxCore() {
     // Wait a bit for Whisper to load
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -736,7 +1123,10 @@ async function startVoxListening() {
 }
 
 async function listenCycle() {
-    if (!voxIsListening) return;
+    // Legacy function - VOX module handles this now
+    // Check if voxIsListening exists globally (it's in vox.js scope)
+    const isListening = typeof voxIsListening !== 'undefined' ? voxIsListening : false;
+    if (!isListening) return;
     
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -767,36 +1157,48 @@ async function listenCycle() {
         
     } catch (error) {
         console.error('Error accessing microphone:', error);
-        document.getElementById('vox-status').textContent = 'Microphone error - check permissions';
-        voxIsListening = false;
+        const statusEl = document.getElementById('vox-status');
+        if (statusEl) statusEl.textContent = 'Microphone error - check permissions';
+        // voxIsListening is in vox.js scope - can't set it here
     }
 }
 
 function stopVoxListening() {
-    voxIsListening = false;
+    // Legacy function - VOX module handles this now
+    if (typeof voxIsListening !== 'undefined') {
+        // Can't modify voxIsListening from here - it's in vox.js scope
+    }
     if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
     }
     document.getElementById('vox-status').textContent = 'Stopped';
     document.getElementById('waveform').classList.remove('active');
 }
+*/
+// END OLD VOX CODE
 
 // Alias for compatibility (old onclick handler)
 function stopVoxCore() {
-    stopVoxListening();
+    // Use new VOX module
+    if (typeof VOX !== 'undefined' && VOX.stopRecording) {
+        VOX.stopRecording();
+    }
 }
 
+// OLD VOX processVoxAudio and addVoxMessage - DISABLED (using VOX module instead)
+/*
 async function processVoxAudio(audioBlob) {
     const formData = new FormData();
-    formData.append('audio', audioBlob, 'vox_recording.wav');
+    formData.append('audio', audioBlob, 'vox_recording.webm');
     
     const language = document.getElementById('vox-language')?.value || 'en';
+    formData.append('language', language);
     
     try {
         document.getElementById('vox-status').textContent = 'TRANSCRIBING...';
         
-        // Transcribe
-        const transcribeResponse = await fetch('/api/transcribe', {
+        // Transcribe using new endpoint that doesn't need ffmpeg
+        const transcribeResponse = await fetch('/api/transcribe_realtime', {
             method: 'POST',
             body: formData
         });
@@ -808,10 +1210,9 @@ async function processVoxAudio(audioBlob) {
         const transcribeData = await transcribeResponse.json();
         
         if (!transcribeData.text || transcribeData.text.trim() === '') {
-            // No speech detected, restart listening
-            if (voxIsListening) {
-                listenCycle();
-            }
+            // No speech detected - status message
+            const statusEl = document.getElementById('vox-status');
+            if (statusEl) statusEl.textContent = 'No speech detected - Ready';
             return;
         }
         
@@ -851,37 +1252,43 @@ async function processVoxAudio(audioBlob) {
         const estimatedDuration = Math.max(2000, voxData.response.length * 50);
         await new Promise(resolve => setTimeout(resolve, estimatedDuration));
         
-        // Continue listening
-        if (voxIsListening) {
-            listenCycle();
-        } else {
-            document.getElementById('vox-status').textContent = 'Ready';
-        }
+        // Update status
+        const statusEl = document.getElementById('vox-status');
+        if (statusEl) statusEl.textContent = 'Ready';
         
     } catch (error) {
         console.error('Error processing vox audio:', error);
-        document.getElementById('vox-status').textContent = 'Error - Ready';
+        const statusEl = document.getElementById('vox-status');
+        if (statusEl) statusEl.textContent = 'Error - Ready';
         
-        // Retry listening
-        if (voxIsListening) {
+        // Don't retry on error
+        const retryListening = false;
+        if (retryListening) {
             setTimeout(() => listenCycle(), 2000);
         }
     }
 }
 
 function addVoxMessage(text, role) {
-    const messagesDiv = document.getElementById('vox-messages');
-    const msgDiv = document.createElement('div');
-    msgDiv.className = `vox-msg ${role}`;
-    msgDiv.textContent = text;
-    messagesDiv.appendChild(msgDiv);
-    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    const chatWindow = document.getElementById('vox-chat-window');
+    if (!chatWindow) {
+        console.error('VOX chat window not found');
+        return;
+    }
     
-    // Add fade effect after 3 seconds
-    setTimeout(() => {
-        msgDiv.classList.add('fading');
-    }, 3000);
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `vox-message vox-${role === 'assistant' ? 'bot' : role}`;
+    
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'vox-message-content';
+    contentDiv.textContent = text;
+    
+    msgDiv.appendChild(contentDiv);
+    chatWindow.appendChild(msgDiv);
+    chatWindow.scrollTop = chatWindow.scrollHeight;
 }
+*/
+// END OLD VOX processVoxAudio and addVoxMessage
 
 // --- SETTINGS ---
 async function loadSettings() {
@@ -963,7 +1370,13 @@ function renderSettingsTab(tab) {
 }
 
 function getSettingDescription(key) {
-    const descriptions = {
+    // First try to get description from config.env.txt
+    if (configDescriptions[key]) {
+        return configDescriptions[key];
+    }
+    
+    // Fallback descriptions for common settings
+    const fallbackDescriptions = {
         'MAIN_MODEL': 'Primary LLM model for reasoning and responses',
         'TEMPERATURE': 'Creativity level (0.0 = deterministic, 1.0 = creative)',
         'MAX_TOKENS': 'Maximum response length',
@@ -974,7 +1387,7 @@ function getSettingDescription(key) {
         'STT_ENABLE': 'Enable speech-to-text input'
     };
     
-    return descriptions[key] || 'No description available';
+    return fallbackDescriptions[key] || 'No description available';
 }
 
 async function saveSettings() {
@@ -1049,7 +1462,16 @@ async function resetSettings() {
 async function updateStats() {
     try {
         const response = await fetch('/api/system_stats');
+        if (!response.ok) return; // Silently fail if server offline
+        
         const stats = await response.json();
+        
+        // Flash green indicator
+        const indicator = document.getElementById('stats-indicator');
+        if (indicator) {
+            indicator.classList.add('active');
+            setTimeout(() => indicator.classList.remove('active'), 300);
+        }
         
         setBar('cpu-bar', stats.cpu);
         setBar('ram-bar', stats.ram);
@@ -1085,13 +1507,31 @@ function updateToggleState(id, active) {
     }
 }
 
-// Web search toggle
+// Web search toggle with persistence
 document.addEventListener('DOMContentLoaded', () => {
+    // Load web search preference on page load
+    fetch('/api/preferences')
+        .then(res => res.json())
+        .then(prefs => {
+            if (prefs.webSearchEnabled !== undefined) {
+                webSearchEnabled = prefs.webSearchEnabled;
+                updateToggleState('web-search-toggle', webSearchEnabled);
+            }
+        })
+        .catch(err => console.error('Failed to load preferences:', err));
+    
     const webSearchToggle = document.getElementById('web-search-toggle');
     if (webSearchToggle) {
         webSearchToggle.addEventListener('click', () => {
             webSearchEnabled = !webSearchEnabled;
             updateToggleState('web-search-toggle', webSearchEnabled);
+            
+            // Save preference
+            fetch('/api/preferences', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ webSearchEnabled: webSearchEnabled })
+            }).catch(err => console.error('Failed to save web search preference:', err));
         });
     }
     
@@ -1104,6 +1544,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (stealthMode) {
                 webSearchEnabled = false;
                 updateToggleState('web-search-toggle', false);
+                
+                // Save stealth mode turning off web search
+                fetch('/api/preferences', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ webSearchEnabled: false })
+                }).catch(err => console.error('Failed to save preference:', err));
             }
         });
     }
@@ -1114,28 +1561,93 @@ function toggleRightSidebar() {
     document.getElementById('right-sidebar').classList.toggle('open');
 }
 
-function selectRagFolder() {
-    // In a real implementation, this would open a folder picker
-    const folder = prompt('Enter folder path:');
-    if (folder) {
-        document.getElementById('rag-folder').value = folder;
+// --- RAG FOLDER SELECTION ---
+let ragFolderFiles = [];
+let ragImageFiles = [];
+
+// Handle folder selection
+document.addEventListener('DOMContentLoaded', () => {
+    const folderInput = document.getElementById('rag-folder-input');
+    const imageInput = document.getElementById('rag-image-input');
+    
+    if (folderInput) {
+        folderInput.addEventListener('change', (e) => {
+            ragFolderFiles = Array.from(e.target.files);
+            const display = document.getElementById('rag-folder-display');
+            if (ragFolderFiles.length > 0) {
+                // Get folder name from first file's path
+                const firstPath = ragFolderFiles[0].webkitRelativePath || ragFolderFiles[0].name;
+                const folderName = firstPath.split('/')[0];
+                display.value = `${folderName} (${ragFolderFiles.length} files)`;
+                console.log(`Selected folder with ${ragFolderFiles.length} files`);
+            } else {
+                display.value = 'No folder selected';
+            }
+        });
     }
+    
+    if (imageInput) {
+        imageInput.addEventListener('change', (e) => {
+            ragImageFiles = Array.from(e.target.files);
+            const countSpan = document.getElementById('rag-image-count');
+            if (countSpan) {
+                countSpan.textContent = `${ragImageFiles.length} images`;
+            }
+            console.log(`Selected ${ragImageFiles.length} images for RAG`);
+        });
+    }
+});
+
+function selectRagFolder() {
+    // Trigger the hidden file input
+    document.getElementById('rag-folder-input').click();
 }
 
 async function embedFolderContents() {
-    const folder = document.getElementById('rag-folder').value;
-    if (!folder) {
-        alert('Please select a folder first');
+    if (ragFolderFiles.length === 0 && ragImageFiles.length === 0) {
+        alert('Please select a folder or images first');
         return;
     }
     
     const statusLog = document.getElementById('rag-status');
-    statusLog.textContent = 'Embedding folder contents...\n';
+    statusLog.textContent = 'Embedding contents to Weaviate vector DB...\n';
     
-    // TODO: Implement actual embedding API call
-    setTimeout(() => {
-        statusLog.textContent += 'Embedding complete!\n';
-    }, 2000);
+    try {
+        const formData = new FormData();
+        
+        // Add text/document files
+        for (const file of ragFolderFiles) {
+            formData.append('files', file, file.webkitRelativePath || file.name);
+        }
+        
+        // Add image files
+        for (const file of ragImageFiles) {
+            formData.append('images', file, file.name);
+        }
+        
+        const embedModel = document.getElementById('rag-embed-model').value;
+        formData.append('embed_model', embedModel);
+        formData.append('vision_model', currentModel); // Use current chat model for vision
+        
+        statusLog.textContent += `Uploading ${ragFolderFiles.length} files and ${ragImageFiles.length} images...\n`;
+        
+        const response = await fetch('/api/embed_to_rag', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            statusLog.textContent += `✓ Embedded ${result.embedded_count} items to vector DB\n`;
+            statusLog.textContent += `Collection: ${result.collection_name}\n`;
+        } else {
+            statusLog.textContent += `✗ Error: ${result.error}\n`;
+        }
+    } catch (error) {
+        statusLog.textContent += `✗ Error: ${error.message}\n`;
+        console.error('RAG embedding error:', error);
+    }
 }
 
 function searchRagIndex() {
@@ -1143,10 +1655,118 @@ function searchRagIndex() {
     if (!query) return;
     
     const statusLog = document.getElementById('rag-status');
-    statusLog.textContent = `Searching for: ${query}...\n`;
+    statusLog.textContent = `Searching vector DB for: ${query}...\n`;
     
     // TODO: Implement actual search API call
-    setTimeout(() => {
-        statusLog.textContent += 'Search complete!\n';
-    }, 1000);
+    fetch('/api/search_rag', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, top_k: 5 })
+    })
+    .then(res => res.json())
+    .then(result => {
+        if (result.results) {
+            statusLog.textContent += `Found ${result.results.length} results:\n`;
+            result.results.forEach((r, i) => {
+                statusLog.textContent += `${i+1}. ${r.content.substring(0, 100)}... (score: ${r.score.toFixed(3)})\n`;
+            });
+        }
+    })
+    .catch(err => {
+        statusLog.textContent += `✗ Search error: ${err.message}\n`;
+    });
+}
+
+// --- CONFIRMATION MODAL ---
+function showConfirmModal(title, message, onConfirm) {
+    console.log('[Modal] Attempting to show modal:', title);
+    const modal = document.getElementById('confirm-modal');
+    const modalTitle = document.getElementById('confirm-modal-title');
+    const modalMessage = document.getElementById('confirm-modal-message');
+    const confirmBtn = document.getElementById('confirm-modal-confirm');
+    const cancelBtn = document.getElementById('confirm-modal-cancel');
+    
+    if (!modal || !modalTitle || !modalMessage || !confirmBtn || !cancelBtn) {
+        console.error('[Modal] Missing elements:', { modal, modalTitle, modalMessage, confirmBtn, cancelBtn });
+        // Fallback to browser confirm
+        if (confirm(message)) {
+            onConfirm();
+        }
+        return;
+    }
+    
+    console.log('[Modal] All elements found, showing modal');
+    modalTitle.textContent = title;
+    modalMessage.textContent = message;
+    
+    // Remove old event listeners by cloning buttons
+    const newConfirmBtn = confirmBtn.cloneNode(true);
+    const newCancelBtn = cancelBtn.cloneNode(true);
+    confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+    cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+    
+    // Add new event listeners
+    newCancelBtn.onclick = () => {
+        console.log('[Modal] Cancel clicked');
+        closeConfirmModal();
+    };
+    
+    newConfirmBtn.onclick = () => {
+        console.log('[Modal] Confirm clicked');
+        closeConfirmModal();
+        if (typeof onConfirm === 'function') {
+            onConfirm();
+        }
+    };
+    
+    modal.classList.remove('hidden');
+    console.log('[Modal] Modal should now be visible');
+}
+
+function closeConfirmModal() {
+    const modal = document.getElementById('confirm-modal');
+    modal.classList.add('hidden');
+}
+
+async function confirmDeleteChat(chatId, chatTitle, isVoiceChat) {
+    console.log('[DELETE] confirmDeleteChat called with chatId:', chatId, 'title:', chatTitle, 'isVoiceChat:', isVoiceChat);
+    showConfirmModal(
+        'Delete Chat',
+        `Are you sure you want to delete "${chatTitle}"? This cannot be undone.`,
+        async () => {
+            try {
+                const response = await fetch(`/api/chats/${chatId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    // Reload appropriate chat list
+                    if (isVoiceChat) {
+                        if (typeof loadVoiceChatList !== 'undefined') {
+                            await loadVoiceChatList();
+                        }
+                    } else {
+                        await loadChatList();
+                    }
+                    
+                    // Clear current session if it was deleted
+                    if (chatId === currentSessionId) {
+                        startNewChat();
+                    } else if (isVoiceChat && typeof voxSessionId !== 'undefined' && chatId === voxSessionId) {
+                        if (typeof clearVOXChat !== 'undefined') {
+                            clearVOXChat();
+                        }
+                        voxSessionId = null;
+                    }
+                    
+                    console.log(`Deleted ${isVoiceChat ? 'voice' : 'text'} chat:`, chatId);
+                } else {
+                    alert('Failed to delete chat');
+                }
+            } catch (error) {
+                console.error('Error deleting chat:', error);
+                alert('Error deleting chat');
+            }
+        }
+    );
 }

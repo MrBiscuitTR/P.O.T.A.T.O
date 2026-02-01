@@ -6,10 +6,11 @@
     <title>P.O.T.A.T.O // Interface</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='cdn/highlight/atom-one-dark.min.css') }}" />
+    <script src="{{ url_for('static', filename='cdn/fontawesome/all.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='cdn/marked/marked.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='cdn/highlight/highlight.min.js') }}"></script>
   </head>
   <body>
     <div class="scanline"></div>
@@ -57,7 +58,7 @@
 
           <!-- Stats Panel -->
           <div class="stats-panel">
-            <h3>SYSTEM STATS</h3>
+            <h3>SYSTEM STATS <span class="stats-indicator" id="stats-indicator"></span></h3>
             <div class="stat-row">
               <span>CPU</span>
               <div class="bar-container">
@@ -168,56 +169,107 @@
               <button class="mobile-menu-toggle" onclick="toggleMobileMenu()">
                 <i class="fas fa-bars"></i>
               </button>
-              <h2>VOX CORE - Voice Assistant</h2>
-              <p class="vox-subtitle">Real-time voice conversation with dolphin-llama3:8b</p>
+              <h2>VOX CORE - Interactive Voice Assistant</h2>
+              <p class="vox-subtitle">Real-time voice conversation with AI</p>
             </div>
 
-            <div class="vox-language-selector">
-              <label>Language:</label>
-              <select id="vox-language">
-                <option value="en">English</option>
-                <option value="fr">French</option>
-                <option value="es">Spanish</option>
-                <option value="de">German</option>
-                <option value="tr">Turkish</option>
-                <option value="zh">Chinese</option>
-              </select>
-              <button class="unload-btn" onclick="unloadVoxModels()" title="Stop VOX and unload models">
-                <i class="fas fa-stop-circle"></i> Stop VOX
-              </button>
-            </div>
+            <div class="vox-settings-bar">
+              <div class="vox-setting">
+                <label>Voice Chats:</label>
+                <div class="vox-chat-selector">
+                  <input type="text" id="vox-chat-search" placeholder="Search voice chats..." onkeyup="filterVoiceChats(this.value)">
+                  <div class="vox-chat-selector-row">
+                    <select id="vox-chat-list" size="1" onchange="loadVoiceChat(this.value)">
+                      <option value="">New Voice Chat</option>
+                    </select>
+                    <button class="vox-delete-btn" onclick="deleteCurrentVoiceChat()" title="Delete selected voice chat">
+                      <i class="fas fa-trash"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
 
-            <div class="vox-visualizer">
-              <div class="vox-status" id="vox-status">Initializing...</div>
-              <div class="waveform" id="waveform">
-                <div class="wave"></div>
-                <div class="wave"></div>
-                <div class="wave"></div>
-                <div class="wave"></div>
-                <div class="wave"></div>
+              <div class="vox-setting">
+                <label>Language:</label>
+                <select id="vox-language" onchange="VOX.setLanguage(this.value)">
+                  <option value="en">English</option>
+                  <option value="fr">French</option>
+                  <option value="es">Spanish</option>
+                  <option value="de">German</option>
+                  <option value="tr">Turkish</option>
+                  <option value="zh">Chinese</option>
+                </select>
+              </div>
+
+              <div class="vox-setting">
+                <label>Audio Device:</label>
+                <select id="vox-device-select" onchange="setAudioDevice(this.value, this.options[this.selectedIndex].text)">
+                  <option>Loading...</option>
+                </select>
+              </div>
+
+              <div class="vox-setting">
+                <label>
+                  <input type="checkbox" id="vox-continuous"> Continuous Mode
+                </label>
+              </div>
+
+              <div class="vox-setting">
+                <label>
+                  <input type="checkbox" id="vox-auto-silence" checked> Auto-detect Silence
+                </label>
               </div>
             </div>
 
-            <div class="vox-transcript" id="vox-transcript">
-              <p class="transcript-label">Transcript:</p>
-              <div id="vox-messages"></div>
-            </div>
+            <div class="vox-main-area">
+              <!-- Whisper Loading Overlay -->
+              <div id="vox-loading-overlay" class="vox-loading-overlay" style="display: none;">
+                <div class="vox-loading-content">
+                  <div class="vox-spinner"></div>
+                  <p>Loading Whisper Model...</p>
+                  <small>First load may take a moment</small>
+                </div>
+              </div>
 
-            <div class="vox-controls">
-              <button class="vox-btn vox-btn-danger" id="vox-stop-btn" onclick="stopVoxCore()">
-                <i class="fas fa-stop"></i> Stop
-              </button>
-            </div>
+              <div class="vox-chat-window" id="vox-chat-window">
+                <!-- Messages will appear here -->
+              </div>
 
-            <div class="vox-settings">
-              <h3>Interrupt Words</h3>
-              <p class="vox-hint">Say any of these to stop: "okay thanks", "stop", "enough", "thank you", "bye", "done"</p>
-            </div>
+              <div class="vox-visualizer">
+                <div class="vox-status" id="vox-status">Ready</div>
+                <div class="waveform" id="waveform">
+                  <div class="wave"></div>
+                  <div class="wave"></div>
+                  <div class="wave"></div>
+                  <div class="wave"></div>
+                  <div class="wave"></div>
+                </div>
+              </div>
 
-            <!-- VOX Chat History Sidebar -->
-            <div class="vox-chat-sidebar">
-              <h3>Chat History</h3>
-              <ul class="vox-chat-list" id="vox-chat-list"></ul>
+              <div class="vox-controls">
+                <button class="vox-btn vox-btn-primary" id="vox-record-btn" onclick="if (typeof VOX !== 'undefined') { if (document.getElementById('vox-record-btn').classList.contains('recording')) { VOX.stopRecording(); } else { VOX.startRecording(); } }">
+                  <i class="fas fa-microphone"></i> Start Recording
+                </button>
+                <button class="vox-btn vox-btn-danger" id="vox-stop-speak-btn" onclick="if (typeof VOX !== 'undefined') VOX.stopSpeaking()">
+                  <i class="fas fa-volume-mute"></i> Stop Speaking
+                </button>
+                <button class="vox-btn vox-btn-warning" onclick="unloadWhisperModel()">
+                  <i class="fas fa-brain"></i> Unload STT
+                </button>
+                <button class="vox-btn vox-btn-secondary" onclick="if (typeof VOX !== 'undefined') VOX.clearChat()">
+                  <i class="fas fa-trash"></i> Clear Chat
+                </button>
+              </div>
+
+              <div class="vox-hints">
+                <h3>💡 Tips</h3>
+                <ul>
+                  <li><strong>Click "Start Recording"</strong> and speak your question</li>
+                  <li><strong>Click "Stop Recording"</strong> or let it auto-detect silence</li>
+                  <li><strong>Continuous Mode:</strong> Auto-restarts listening after each response</li>
+                  <li><strong>Interrupt Words:</strong> Say 'okay thanks', 'alright stop', 'okay enough', 'thank you', 'bye', 'done' or 'shut up' to interrupt</li>
+                </ul>
+              </div>
             </div>
           </div>
         </section>
@@ -233,7 +285,7 @@
           </div>
           <div class="browser-placeholder">
             <i class="fas fa-globe"></i>
-            <p>Browser View (Placeholder)</p>
+            <p>Browser View (Placeholder - Playwright mcp browser interval screenshots.)</p>
           </div>
         </section>
 
@@ -281,9 +333,31 @@
         
         <div class="rag-content">
           <div class="control-group">
-            <label>Context Folder</label>
-            <input type="text" id="rag-folder" placeholder="/path/to/docs" />
-            <button class="action-btn" onclick="selectRagFolder()">Browse</button>
+            <label>RAG Context (Embed to Vector DB)</label>
+            <div class="file-input-wrapper">
+              <input type="text" id="rag-folder-display" placeholder="No folder selected" readonly />
+              <input type="file" id="rag-folder-input" webkitdirectory directory multiple hidden />
+              <button class="action-btn" onclick="document.getElementById('rag-folder-input').click()">
+                <i class="fas fa-folder-open"></i> Select Folder
+              </button>
+            </div>
+            <small style="color: #888; display: block; margin-top: 5px;">
+              RAG: Embeds files to Weaviate vector DB for semantic search
+            </small>
+          </div>
+
+          <div class="control-group">
+            <label>RAG Image Input (Vision Models)</label>
+            <div class="file-input-wrapper">
+              <input type="file" id="rag-image-input" accept="image/*" multiple hidden />
+              <button class="action-btn" onclick="document.getElementById('rag-image-input').click()">
+                <i class="fas fa-image"></i> Select Images
+              </button>
+              <span id="rag-image-count" style="color: #888; margin-left: 10px;">0 images</span>
+            </div>
+            <small style="color: #888; display: block; margin-top: 5px;">
+              For vision models only - embeds image features to vector DB
+            </small>
           </div>
 
           <div class="control-group">
@@ -315,9 +389,38 @@
     </div>
 
     <!-- Voice Recording Overlay -->
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="confirm-modal hidden">
+      <div class="confirm-modal-content">
+        <h3 id="confirm-modal-title">Confirm Action</h3>
+        <p id="confirm-modal-message">Are you sure?</p>
+        <div class="confirm-modal-buttons">
+          <button class="confirm-btn confirm-btn-cancel" id="confirm-modal-cancel" onclick="closeConfirmModal()">Cancel</button>
+          <button class="confirm-btn confirm-btn-danger" id="confirm-modal-confirm">Confirm</button>
+        </div>
+      </div>
+    </div>
+
     <div id="voice-overlay" class="voice-overlay hidden">
       <div class="voice-container">
         <h2>RECORDING...</h2>
+        <div class="voice-language-selector">
+          <label for="voice-language-mode">Language:</label>
+          <select id="voice-language-mode">
+            <option value="translate-en" selected>Translate to English</option>
+            <option value="auto">Auto-detect (Keep Original)</option>
+            <option value="en">English</option>
+            <option value="tr">Turkish</option>
+            <option value="fr">French</option>
+            <option value="es">Spanish</option>
+            <option value="de">German</option>
+            <option value="zh">Chinese</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="ar">Arabic</option>
+            <option value="ru">Russian</option>
+          </select>
+        </div>
         <div class="visualizer">
           <div class="wave"></div>
           <div class="wave"></div>
@@ -330,5 +433,14 @@
     </div>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='vox.js') }}"></script>
+    <script>
+      // Initialize VOX when page loads
+      document.addEventListener('DOMContentLoaded', () => {
+        if (typeof VOX !== 'undefined') {
+          VOX.init();
+        }
+      });
+    </script>
   </body>
 </html>

@@ -17,27 +17,35 @@ def clean_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text)             # normalize whitespace
     return text.strip()
 
-# Use @mcp.tool (instance method) — this is the standard way
-@mcp.tool
-def web_search_urls(
+# Define raw functions first (for direct imports)
+def _potatool_web_search_urls_impl(
     query: str,
-    num_results: int = MAX_RESULTS
+    num_results: int = MAX_RESULTS,
+    page: int = 1
 ) -> dict:
     """
     Search the web using a private SearxNG instance.
     Returns clean titles, URLs, domains & snippets.
     
     Preferred tool for general/current information needs.
+    Can search multiple pages for more results.
+    
+    Args:
+        query: Search query string
+        num_results: Number of results per page (1-10)
+        page: Page number (starts at 1)
     """
     try:
         num_results = min(max(1, num_results), 10)
+        page = max(1, page)  # Ensure page is at least 1
         
         params = {
             'q': query,
             'format': 'json',
             'language': 'all',
             'category': 'general',
-            'safesearch':'0'
+            'safesearch':'0',
+            'pageno': page
         }
         
         resp = requests.get(SEARX_URL, params=params, timeout=12)
@@ -57,6 +65,7 @@ def web_search_urls(
         
         return {
             "query": query,
+            "page": page,
             "results": formatted,
             "count": len(formatted),
             "error": None
@@ -65,18 +74,18 @@ def web_search_urls(
     except Exception as e:
         return {
             "query": query,
+            "page": page,
             "results": [],
             "count": 0,
             "error": str(e)
         }
 
-@mcp.tool
-def extract_content(
+def _potatool_extract_content_impl(
     url: str
 ) -> dict:
     """
     Extract human-readable content from a web page URL.
-    Use with the relevant URLs retrieved after calling "web_search_urls" tool.
+    Use with the relevant URLs retrieved after calling "potatool_web_search_urls" tool.
     Preserves <a href="...">text</a> links exactly as-is.
     Preserves tables in simplified HTML (<table><tr><th><td> only, no attributes).
     Flattens all other elements (including headings, paragraphs, lists, code blocks, divs, spans, etc.) to plain text.
@@ -84,16 +93,38 @@ def extract_content(
     Useful for AI agents to understand full page content without full HTML clutter.
     """
     try:
+        # Use realistic browser headers to avoid blocking
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         }
-        resp = requests.get(url, headers=headers, timeout=15)
+        
+        # Try with longer timeout and follow redirects
+        resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
         resp.raise_for_status()
+        
+        # Check if we got content
+        if not resp.text or len(resp.text) < 100:
+            return {
+                "url": url,
+                "content": "",
+                "error": f"Page returned very little content ({len(resp.text)} chars). Site may require JavaScript or block scrapers."
+            }
         
         soup = BeautifulSoup(resp.text, 'html.parser')
         
         # Remove unwanted sections/tags
-        for tag in soup.find_all(['script', 'style', 'head', 'iframe', 'noscript', 'footer', 'nav', 'aside', 'header']):
+        for tag in soup.find_all(['script', 'style', 'head', 'iframe', 'noscript', 'footer', 'nav', 'aside', 'header', 'form', 'button']):
             tag.decompose()
         
         # Recursive function to process elements
@@ -139,6 +170,13 @@ def extract_content(
         main_content = soup.body if soup.body else soup
         extracted = process_element(main_content).strip()
         
+        # Check if we actually extracted meaningful content
+        if not extracted or len(extracted) < 50:
+            return {
+                "url": url,
+                "content": extracted,
+                "error": f"Extracted very little content ({len(extracted)} chars). Site may be blocked, require login, or need JavaScript rendering. Try a different URL."
+            }
         return {
             "url": url,
             "content": extracted,
@@ -151,6 +189,22 @@ def extract_content(
             "content": "",
             "error": str(e)
         }
+
+# Register with MCP decorators (wraps the _impl functions)
+@mcp.tool
+def potatool_web_search_urls(query: str, num_results: int = MAX_RESULTS) -> dict:
+    """
+    Search the web using a private SearxNG instance.
+    Returns clean titles, URLs, domains & snippets.
+    """
+    return _potatool_web_search_urls_impl(query, num_results)
+
+@mcp.tool
+def potatool_extract_content(url: str) -> dict:
+    """
+    Extract human-readable content from a web page URL.
+    """
+    return _potatool_extract_content_impl(url)
 
 if __name__ == "__main__":
     # Default = stdio transport → perfect for Continue.dev MCP

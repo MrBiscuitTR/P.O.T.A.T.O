@@ -23,6 +23,10 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ.pop("HF_TOKEN", None)
 
+# Force CUDA GPU (not iGPU)
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+torch.cuda.set_device(0)
+
 try:
     from chatterbox.tts_turbo import ChatterboxTurboTTS
 except ImportError:
@@ -124,10 +128,14 @@ def split_sentences(text: str) -> list[str]:
 
 stop_event = threading.Event()
 shutdown_event = threading.Event()
-audio_q = queue.Queue(maxsize=2)
+audio_q = queue.Queue()
+playback_q = queue.Queue()
 producer_thread = None
+playback_thread = None
+current_stream = None
 
 def generate_worker(text_groups, audio_q):
+    """Generate TTS audio chunks and put them in queue"""
     try:
         model = _get_model()  # Get model instance
         for sentence in text_groups:
@@ -151,15 +159,55 @@ def generate_worker(text_groups, audio_q):
     finally:
         audio_q.put(None)
 
+def playback_worker(audio_q, sample_rate):
+    """Continuously play audio chunks from queue without gaps"""
+    global current_stream
+    try:
+        while not shutdown_event.is_set():
+            if stop_event.is_set():
+                # Clear queue when stopped
+                while not audio_q.empty():
+                    try:
+                        audio_q.get_nowait()
+                    except:
+                        break
+                stop_event.clear()
+                continue
+            
+            item = audio_q.get()
+            if item is None:
+                break
+            
+            sentence, wav_np = item
+            print(f"→ {sentence}")
+            
+            if stop_event.is_set():
+                continue
+            
+            # Play audio and wait for completion
+            sd.play(wav_np, samplerate=sample_rate, blocking=True)
+            
+    except Exception as e:
+        print(f"Playback error: {e}")
+    finally:
+        current_stream = None
+
 def speak_sentences_grouped(text: str):
-    """Stream TTS in chunks. Safe for very long text."""
-    global producer_thread
-    stop_event.clear()
-    audio_q.queue.clear()
+    """Stream TTS in chunks with seamless playback queue. Safe for very long text."""
+    global producer_thread, playback_thread
+    
+    # Don't clear stop_event here - let it be managed by stop_current_tts()
+    # Clear audio queue
+    while not audio_q.empty():
+        try:
+            audio_q.get_nowait()
+        except:
+            break
 
     groups = split_sentences(text)
     model = _get_model()  # Get model instance for sample rate
 
+    # Start producer thread
     producer_thread = threading.Thread(
         target=generate_worker,
         args=(groups, audio_q),
@@ -167,55 +215,82 @@ def speak_sentences_grouped(text: str):
     )
     producer_thread.start()
 
-    try:
-        while True:
-            item = audio_q.get()
-            if item is None or stop_event.is_set() or shutdown_event.is_set():
-                break
-
-            sentence, wav_np = item
-            print(f"→ {sentence}")
-
-            sd.play(wav_np, samplerate=int(model.sr))
-            sd.wait()
-
-            time.sleep(0.2)
-
-    except KeyboardInterrupt:
-        stop_event.set()
-        sd.stop()
-        print("\nCtrl+C → exiting current TTS.")
-        torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
+    # Start playback thread if not running
+    if playback_thread is None or not playback_thread.is_alive():
+        playback_thread = threading.Thread(
+            target=playback_worker,
+            args=(audio_q, int(model.sr)),
+            daemon=True
+        )
+        playback_thread.start()
+    
+    # Wait for producer to finish
+    producer_thread.join()
 # =========================
 # Control functions
 # =========================
 
 def stop_current_tts():
-    """Stop the current generation & playback, keep model loaded."""
+    """Stop the current generation & playback, keep model loaded. Does NOT terminate app."""
     stop_event.set()
     sd.stop()
-    # Ensure audio queue is cleared
+    
+    # Clear audio queue
     while not audio_q.empty():
-        audio_q.get_nowait()
-    if producer_thread is not None:
-        producer_thread.join(timeout=0.1)
+        try:
+            audio_q.get_nowait()
+        except:
+            break
+    
+    # Don't join threads - let them handle stop_event gracefully
     print("→ Current TTS stopped, model still loaded.")
+    
+    # Reset stop event after a brief moment
+    time.sleep(0.1)
+    stop_event.clear()
 
 def shutdown_tts():
-    """Stop everything and unload the model to free VRAM."""
+    """Stop everything and unload the model to free VRAM. Safe, won't crash app."""
+    global _model, producer_thread, playback_thread
+    
+    # Signal stop
     stop_event.set()
     shutdown_event.set()
     sd.stop()
-    # Join producer thread if running
-    if producer_thread is not None:
-        producer_thread.join(timeout=0.1)
-
-    global _model
-    if _model is not None:
-        del _model
-        _model = None
-        torch.cuda.empty_cache()
+    
+    # Clear queues
+    while not audio_q.empty():
+        try:
+            audio_q.get_nowait()
+        except:
+            break
+    
+    # Put None to signal threads to exit
+    try:
+        audio_q.put(None, timeout=0.1)
+    except:
+        pass
+    
+    # Wait for threads
+    if producer_thread is not None and producer_thread.is_alive():
+        producer_thread.join(timeout=1.0)
+    if playback_thread is not None and playback_thread.is_alive():
+        playback_thread.join(timeout=1.0)
+    
+    # Unload model
+    with _model_lock:
+        if _model is not None:
+            del _model
+            _model = None
+            torch.cuda.empty_cache()
+    
+    # Reset events
+    stop_event.clear()
+    shutdown_event.clear()
+    
+    producer_thread = None
+    playback_thread = None
+    
     print("→ TTS shutdown complete, model unloaded, VRAM freed.")
 
 def unload_model():

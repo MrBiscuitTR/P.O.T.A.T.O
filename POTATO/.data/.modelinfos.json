@@ -1,0 +1,154 @@
+{
+  "deepseek-ocr:3b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": true
+  },
+  "ServiceNow-AI/Apriel-1.6-15b-Thinker:Q4_K_M": {
+    "can_think": "true",
+    "tool_calls": true,
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "**",
+      "close": "**"
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": true,
+    "detection_notes": "Thinking is presented in separate steps without inline tags.",
+    "detection_date": "2026-02-01T15:33:32.679555"
+  },
+  "glm-4.7-flash:Q4_K_M": {
+    "can_think": "true",
+    "tool_calls": true,
+    "vision": true
+  },
+  "qwen2.5:14b-instruct-q4_K_M": {
+    "can_think": "true",
+    "tool_calls": true,
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "<reasoning>",
+      "close": "</reasoning>"
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": true,
+    "detection_notes": "Thinking appears in separate sections labeled as 'Step 1' and 'Step 2'.",
+    "detection_date": "2026-02-01T22:00:00.445713"
+  },
+  "llava:7b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": true
+  },
+  "dengcao/Qwen3-Reranker-8B:Q4_K_M": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "devstral-small-2:24b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "codestral:22b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "qwen3-coder:30b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "dolphin-llama3:8b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "<reasoning>",
+      "close": "</reasoning>"
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": true,
+    "detection_notes": "The output uses <reasoning> tags to encapsulate the step-by-step reasoning process.",
+    "detection_date": "2026-02-01T16:23:17.842395"
+  },
+  "mathstral:7b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "devstral:24b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "nomic-embed-text:latest": {
+    "can_think": false,
+    "tool_calls": false,
+    "vision": false
+  },
+  "mxbai-embed-large:latest": {
+    "can_think": false,
+    "tool_calls": false,
+    "vision": false
+  },
+  "dolphin-mixtral:latest": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "llama2-uncensored:7b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "<reasoning>",
+      "close": "</reasoning>"
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": true,
+    "detection_notes": "The output uses reasoning tags for the problem-solving process.",
+    "detection_date": "2026-02-01T17:59:38.554874"
+  },
+  "dolphin-phi:latest": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "qwen3-vl:8b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": true,
+    "thinking_tags": {},
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "No thinking or reasoning tags were identified in the output.",
+    "detection_date": "2026-02-01T18:11:42.718228"
+  },
+  "gemma3:4b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "qwen2.5-coder:7b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "llama3.1:8b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "gpt-oss:20b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  },
+  "mistral:7b": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown"
+  }
+}
