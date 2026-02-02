@@ -1701,6 +1701,12 @@ function renderSettingsTab(tab) {
         case 'voice':
             configSection = settings.voice_config || {};
             break;
+        case 'system_prompts':
+            renderSystemPromptsTab(container);
+            return;
+        case 'config':
+            renderConfigurationTab(container);
+            return;
         case 'bools':
             configSection = settings.bools || {};
             break;
@@ -1737,36 +1743,258 @@ function getSettingDescription(key) {
         return configDescriptions[key];
     }
     
-    // Fallback descriptions for common settings
+    // Fallback/generated descriptions (marked with "(?)" prefix)
     const fallbackDescriptions = {
-        'MAIN_MODEL': 'Primary LLM model for reasoning and responses',
+        // Core LLM Config
+        'MAX_INTERMEDIATE_TOKENS': '(?) Maximum tokens for intermediate reasoning steps (-1 for unlimited)',
+        'MAX_TOKENS': 'Maximum response length in tokens',
+        'MAX_SPEECH_TOKENS': 'Maximum tokens for speech/TTS responses',
         'TEMPERATURE': 'Creativity level (0.0 = deterministic, 1.0 = creative)',
-        'MAX_TOKENS': 'Maximum response length',
-        'ENABLE_WEB_SEARCH': 'Allow AI to search the web for current information',
-        'STEALTH_MODE': 'Fully offline mode - no internet access',
-        'USE_RAG': 'Enable Retrieval Augmented Generation',
-        'TTS_ENABLE': 'Enable text-to-speech output',
-        'STT_ENABLE': 'Enable speech-to-text input'
+        
+        // Online Search Config
+        'SEARXNG_NUM_RESULTS': 'Number of search results to retrieve from SearXNG API for each query',
+        'SMART_SCANNING': 'Enable smart scanning of search results to extract relevant information',
+        'RECURSIVE_SEARCH': 'Enable recursive search to further explore links found in initial search results',
+        'RECURSIVE_SEARCH_DEPTH': 'Depth of recursive search when enabled',
+        'SUMMARIZE_SEARCH_RESULTS': 'Summarize search results before using them for context generation',
+        
+        // RAG Config
+        'RAG_TOP_K': 'Number of top relevant documents to retrieve for RAG',
+        'RAG_MAX_TOKENS': 'Max tokens for RAG context generation',
+        'CHUNK_SIZE': 'Size of text chunks for vectorization and retrieval',
+        'CHUNK_OVERLAP': 'Overlap size between text chunks for better context retention',
+        'RELEVANCE_CHECK_RAG': 'Enable relevance checking for RAG context documents',
+        'RELEVANCE_CHECK_THRESHOLD': 'Threshold for relevance checking during RAG',
+        'SUMMARIZE_RETRIEVED_DOCS': 'Summarize retrieved documents before using them for context generation',
+        
+        // Voice Config
+        'WAKE_WORD': 'Wake word for voice activation',
+        'SILENCE_THRESHOLD': 'Silence threshold in seconds to detect end of speech',
+        'SLEEP_WORDS': 'Comma-separated list of words/phrases to put the assistant to sleep',
+        'RESET_CONTEXT_WORDS': 'Comma-separated list of words/phrases to reset the conversation context',
+        
+        // System Prompts
+        'VOX_SYSTEM_PROMPT': 'Custom system prompt prepended to all VOX Core voice interactions',
+        'CHAT_SYSTEM_PROMPT': 'Custom system prompt prepended to all chat conversations',
+        'TTS_SYSTEM_PROMPT': 'System prompt specifically for TTS voice output - controls speaking style',
+        
+        // Ollama Models
+        'CORE_OLLAMA_MODEL': 'The main model used for core functionalities',
+        'SUMMARIZATION_OLLAMA_MODEL': 'Model used for summarization tasks',
+        'RELEVANCE_OLLAMA_MODEL': 'Model used for determining relevance during RAG',
+        'EMBEDDING_OLLAMA_MODEL': 'Model used for generating text embeddings for local vector database',
+        'CHATTERBOX_TTS_MODEL_PATH': '(?) Path to custom TTS model for chatterbox mode',
+        
+        // API Endpoints
+        'OLLAMA_API_URL': 'Your Ollama API endpoint URL',
+        'DISCORD_BOT_TOKEN': '(?) Discord bot token for bot commands',
+        'DISCORD_WEBHOOK_URL': '(?) Discord webhook URL for sending messages to a channel',
+        
+        // Data Paths
+        'LOCAL_DATA_PATH': 'Path to local data files for retrieval-augmented generation',
+        'VECTOR_DB_PATH': 'Path to the local vector database for embeddings and RAG',
+        'OTHER_DATA_PATH': 'Path to other data files, such as chat histories',
+        
+        // Web UI Config
+        'ENABLE_WEBUI': '(?) Enable the web UI interface',
+        'WEBUI_PORT': '(?) Port for the web UI server',
+        'WEBUI_HOST': '(?) Host address for the web UI server',
+        'ENABLE_WEBUI_AUTH': 'Set to true to enable authentication for the web UI',
+        'WEBUI_USERNAME': 'Username for web UI authentication',
+        'WEBUI_PASSWORD': 'Password for web UI authentication',
+        'ACCEPT_TEXT_FILE_TYPES': 'Comma-separated list of accepted text-based file types for upload',
+        'ACCEPT_IMAGE_FILE_TYPES': 'Comma-separated list of accepted image file types for upload',
+        
+        // Safe Code Execution
+        'CHECK_CODE_SAFETY': 'Enable safety checks for code execution using static analysis',
+        'CODE_EXECUTION_TIMEOUT': 'Timeout in seconds for code execution',
+        'SANDBOX_PATH': 'Path to sandbox directory for safe code execution',
+        
+        // Bools
+        'USE_TOR': 'Route web requests through Tor network for enhanced privacy',
+        'ENABLE_HISTORY': 'Enable chat history saving and retrieval',
+        'RESET_HISTORY_ON_START': 'Reset chat history when the application starts',
+        'SAVE_SENT_FILES': 'Save files sent by users in chats',
+        'ENABLE_FILE_UPLOAD': 'Enable file upload functionality in the web UI',
+        'ENABLE_FOLDER_UPLOAD': 'Enable folder upload functionality in the web UI',
+        'ENABLE_CODE_UPLOAD': 'Enable code file upload functionality in the web UI',
+        'ENABLE_IMAGE_PROCESSING': 'Enable image processing capabilities (e.g., OCR, image analysis)',
+        'ENABLE_SENT_URLS': 'Enable processing of URLs sent by users in chats',
+        'SAFE_CODE_EXECUTION': 'Enable safe code execution environment for running code snippets',
+        'USE_LATEX_RENDERING': 'Enable LaTeX rendering for mathematical expressions in responses',
+        'ENABLE_DISCORD_BOT': '(?) Enable Discord bot integration',
+        'ENABLE_TTS': 'Enable Text-to-Speech output',
+        'ENABLE_STT': 'Enable Speech-to-Text input',
+        'ENABLE_SEARXNG_SEARCH': 'Enable web search using SearXNG API',
+        'ENABLE_DANGEROUS_TOOLS': 'Enable potentially dangerous tools that can modify or delete files',
+        'ENABLE_OLLAMA_STREAMING': 'Enable streaming responses from Ollama for faster response times',
+        'ENABLE_AGENTS': 'Enable agent functionalities for more complex tasks',
+        'ENABLE_AUTONOMOUS_MODE': 'Enable autonomous mode for the assistant to perform tasks without user intervention',
+        'ENABLE_DEVICE_CONTROL': 'Enable device control functionalities',
+        'ENABLE_LOGS': 'Enable logging of interactions and events for debugging and analysis',
+        'ENABLE_ALWAYS_HITL': 'Enable Always Human-in-the-Loop mode for continuous human oversight',
+        'IDIOT_MODE': 'Enable idiot mode for simplified interactions and reduced complexity'
     };
     
-    return fallbackDescriptions[key] || 'No description available';
+    return fallbackDescriptions[key] || '(?) No description available';
+}
+
+function renderSystemPromptsTab(container) {
+    const systemPrompts = settings.system_prompts || {
+        VOX_SYSTEM_PROMPT: '',
+        CHAT_SYSTEM_PROMPT: '',
+        TTS_SYSTEM_PROMPT: ''
+    };
+    
+    const promptConfigs = [
+        {
+            key: 'VOX_SYSTEM_PROMPT',
+            label: 'VOX System Prompt',
+            description: 'Custom instructions prepended to all VOX Core voice interactions. This allows you to customize the AI\'s personality and behavior specifically for voice chats.',
+            placeholder: 'e.g., You are a helpful, conversational AI assistant...'
+        },
+        {
+            key: 'CHAT_SYSTEM_PROMPT',
+            label: 'Chat System Prompt',
+            description: 'Custom instructions prepended to all text chat conversations. This allows you to customize the AI\'s personality and behavior for text-based interactions.',
+            placeholder: 'e.g., You are a helpful AI assistant...'
+        },
+        {
+            key: 'TTS_SYSTEM_PROMPT',
+            label: 'TTS System Prompt',
+            description: 'System prompt specifically for TTS voice output - controls speaking style, tone, and how the AI formats text for speech.',
+            placeholder: 'e.g., You are a human-like assistant speaking naturally...'
+        }
+    ];
+    
+    promptConfigs.forEach(config => {
+        const card = document.createElement('div');
+        card.className = 'setting-card prompt-card';
+        
+        const value = systemPrompts[config.key] || '';
+        const expandedClass = value ? '' : 'collapsed';
+        
+        card.innerHTML = `
+            <div class="prompt-header" onclick="togglePromptExpand(this)">
+                <label>${config.label}</label>
+                <i class="fas fa-chevron-down expand-icon"></i>
+            </div>
+            <div class="prompt-content ${expandedClass}">
+                <div class="setting-description">${config.description}</div>
+                <textarea 
+                    id="setting-${config.key}" 
+                    rows="6" 
+                    placeholder="${config.placeholder}"
+                >${value}</textarea>
+            </div>
+        `;
+        
+        container.appendChild(card);
+    });
+}
+
+function togglePromptExpand(headerElement) {
+    const content = headerElement.nextElementSibling;
+    const icon = headerElement.querySelector('.expand-icon');
+    
+    content.classList.toggle('collapsed');
+    icon.classList.toggle('rotated');
+}
+
+function renderConfigurationTab(container) {
+    // Configuration tab combines: potato, ollama_models, data_paths, web_ui_config, safe_code_execution_config
+    const sections = [
+        { title: 'Ollama Models', data: settings.configuration?.ollama_models || {} },
+        { title: 'API Endpoints', data: settings.configuration?.potato || {} },
+        { title: 'Data Paths', data: settings.data_paths || {} },
+        { title: 'Web UI Configuration', data: settings.web_ui_config || {} },
+        { title: 'Safe Code Execution', data: settings.safe_code_execution_config || {} }
+    ];
+    
+    sections.forEach(section => {
+        if (Object.keys(section.data).length === 0) return;
+        
+        const sectionHeader = document.createElement('h3');
+        sectionHeader.className = 'settings-section-header';
+        sectionHeader.textContent = section.title;
+        container.appendChild(sectionHeader);
+        
+        Object.keys(section.data).forEach(key => {
+            const card = document.createElement('div');
+            card.className = 'setting-card';
+            
+            const value = section.data[key];
+            const inputType = typeof value === 'boolean' ? 'checkbox' : 
+                             typeof value === 'number' ? 'number' : 'text';
+            
+            let inputHtml = '';
+            if (inputType === 'checkbox') {
+                inputHtml = `<input type="checkbox" id="setting-${section.title.replace(/ /g, '_')}-${key}" ${value ? 'checked' : ''} />`;
+            } else {
+                inputHtml = `<input type="${inputType}" id="setting-${section.title.replace(/ /g, '_')}-${key}" value="${value}" />`;
+            }
+            
+            card.innerHTML = `
+                <label>${key.replace(/_/g, ' ')}</label>
+                ${inputHtml}
+                <div class="setting-description">${getSettingDescription(key)}</div>
+            `;
+            
+            container.appendChild(card);
+        });
+    });
 }
 
 async function saveSettings() {
     const newSettings = { ...settings };
     
+    // Initialize system_prompts if it doesn't exist
+    if (!newSettings.system_prompts) {
+        newSettings.system_prompts = {};
+    }
+    
     // Gather all inputs
     const inputs = document.querySelectorAll('[id^="setting-"]');
     inputs.forEach(input => {
-        const key = input.id.replace('setting-', '');
+        let key = input.id.replace('setting-', '');
         let value = input.type === 'checkbox' ? input.checked : input.value;
         
         if (input.type === 'number') {
             value = parseFloat(value);
         }
         
-        // Find which section this belongs to
-        if (newSettings.core_llm_config && key in newSettings.core_llm_config) {
+        // Handle Configuration tab inputs (they have prefixes like "Ollama_Models-KEY")
+        if (key.includes('-')) {
+            const parts = key.split('-');
+            const section = parts[0].replace(/_/g, ' ');
+            const actualKey = parts.slice(1).join('-');
+            
+            // Map section names to settings structure
+            if (section === 'Ollama Models') {
+                if (!newSettings.configuration) newSettings.configuration = {};
+                if (!newSettings.configuration.ollama_models) newSettings.configuration.ollama_models = {};
+                newSettings.configuration.ollama_models[actualKey] = value;
+            } else if (section === 'API Endpoints') {
+                if (!newSettings.configuration) newSettings.configuration = {};
+                if (!newSettings.configuration.potato) newSettings.configuration.potato = {};
+                newSettings.configuration.potato[actualKey] = value;
+            } else if (section === 'Data Paths') {
+                if (!newSettings.data_paths) newSettings.data_paths = {};
+                newSettings.data_paths[actualKey] = value;
+            } else if (section === 'Web UI Configuration') {
+                if (!newSettings.web_ui_config) newSettings.web_ui_config = {};
+                newSettings.web_ui_config[actualKey] = value;
+            } else if (section === 'Safe Code Execution') {
+                if (!newSettings.safe_code_execution_config) newSettings.safe_code_execution_config = {};
+                newSettings.safe_code_execution_config[actualKey] = value;
+            }
+        } 
+        // Handle system prompts
+        else if (key === 'VOX_SYSTEM_PROMPT' || key === 'CHAT_SYSTEM_PROMPT' || key === 'TTS_SYSTEM_PROMPT') {
+            newSettings.system_prompts[key] = value;
+        }
+        // Handle regular settings
+        else if (newSettings.core_llm_config && key in newSettings.core_llm_config) {
             newSettings.core_llm_config[key] = value;
         } else if (newSettings.online_search_config && key in newSettings.online_search_config) {
             newSettings.online_search_config[key] = value;

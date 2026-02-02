@@ -171,7 +171,7 @@ mcp_tools_schema = [
     }
 ]
 
-def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, stealth_mode=False):
+def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, stealth_mode=False, custom_system_prompt=""):
     """
     Generator that handles the LLM Stream + Tool execution loop with thinking detection.
     
@@ -180,6 +180,7 @@ def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, steal
         model: Model name
         enable_search: Whether web search tools are available
         stealth_mode: Whether to operate in stealth mode (affects tool selection)
+        custom_system_prompt: Optional custom system prompt to prepend to all system context
     """
     # Auto-detect tags if this is first time using model
     if needs_tag_detection(model):
@@ -199,6 +200,8 @@ def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, steal
         }
     }
     # 1. Build system context with current settings
+    # Prepend custom system prompt if provided
+    custom_prompt_prefix = f"{custom_system_prompt}\n\n---\n\n" if custom_system_prompt else ""
     web_search_instructions = """You have access to web search tools via Ollama's native tool calling system.
 
 **AVAILABLE TOOLS:**
@@ -230,18 +233,19 @@ def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, steal
 
 **IMPORTANT:** Even without web search, you should STILL ANSWER the user's question to the best of your ability using your training data and conversation history. Briefly mention that your information might not be current or up-to-date, but provide the most helpful answer you can from your existing knowledge."""
     
-    stealth_note = "STEALTH MODE: Avoid tools that leave traces or logs. Prioritize privacy-focused operations." if stealth_mode else ""
+    stealth_note = "STEALTH MODE: Avoid tools that leave traces or logs. Prioritize privacy-focused operations. DO NOT USE WEB OR API BASED TOOLS." if stealth_mode else ""
     
     settings_context = f"""
+{custom_prompt_prefix}
 [CURRENT SYSTEM SETTINGS]
 - Web Search: {'ENABLED' if enable_search else 'DISABLED'}
 - Stealth Mode: {'ENABLED' if stealth_mode else 'DISABLED'}
-- Current Date: February 2026
+- Current Date: YMD {datetime.now().strftime('%Y-%m-%d')}
 
 {web_search_instructions if enable_search else no_search_instructions}
 {stealth_note}
 
-ALWAYS consider the full conversation history when determining what to search for or how to respond.
+ALWAYS consider the full conversation history when determining what to search for or how to respond. If history is too long, focus on RECENT messages by user.
 """
     
     # 2. Inject Rules ONLY if web search is enabled (to avoid conflicting instructions)
@@ -724,40 +728,6 @@ ALWAYS consider the full conversation history when determining what to search fo
         yield {'content': f"\n\n[Error: {error_msg}]\n\n"}
         print(f"[ERROR] {error_msg}")
 
-def main():
-    print("POTATO Assistant is ready. Type 'exit' to quit.")
-    
-    while True:
-        try:
-            query = input("Enter your query: ").strip()
-            
-            if query.lower() in ['exit', 'quit']:
-                break
-              
-            if not query:
-                continue
-              
-            print(f"Processing query: {query}")
-            
-            # Get system info
-            system_info = json_get_instant_system_info()
-            print("System Information:")
-            for key, value in system_info.items():
-                print(f"  {key}: {value}")
-            print()
-            
-            # Process the query
-            # response = process_user_query(query)  # TODO: Define this function
-            print(f"Response: [Test mode not implemented]")
-            
-        except KeyboardInterrupt:
-            print("\nExiting...")
-            break
-        except Exception as e:
-            print(f"Error: {e}")
-            continue
-
-
 
 # TEST; UPDATE LATER
 # --- Define Tools Schema ---
@@ -893,10 +863,10 @@ def detect_thinking_capability(test_response):
 
 if __name__ == "__main__":
     try:
-        main()
+        print("This script is not meant to run directly. Try running  'python -m POTATO.webui.app' instead.")
+        print("It is recommended to set up a virtual environment for POTATO. See the README for instructions.")
+        print("Exiting...")
     except KeyboardInterrupt:
-        import subprocess
-        subprocess.run(["ollama", "stop", "gpt-oss:20b"])
         print("Exiting...")
         import sys 
         sys.exit(1)

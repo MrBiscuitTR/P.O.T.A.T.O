@@ -763,6 +763,93 @@ body {
   font-style: italic;
 }
 
+/* System Prompts - Collapsible Cards */
+.prompt-card {
+  grid-column: 1 / -1; /* Span full width */
+  border: 1px solid var(--primary-color);
+  padding: 0;
+  background: rgba(0, 255, 0, 0.03);
+  overflow: hidden;
+}
+
+.prompt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  cursor: pointer;
+  background: rgba(0, 255, 0, 0.05);
+  transition: background 0.2s;
+}
+
+.prompt-header:hover {
+  background: rgba(0, 255, 0, 0.08);
+}
+
+.prompt-header label {
+  margin: 0;
+  cursor: pointer;
+  font-size: 0.95rem;
+  font-weight: bold;
+}
+
+.expand-icon {
+  transition: transform 0.3s ease;
+  color: var(--primary-color);
+}
+
+.expand-icon.rotated {
+  transform: rotate(180deg);
+}
+
+.prompt-content {
+  max-height: 500px;
+  padding: 15px;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  overflow: hidden;
+}
+
+.prompt-content.collapsed {
+  max-height: 0;
+  padding: 0 15px;
+}
+
+.prompt-content textarea {
+  width: 100%;
+  background: #000;
+  border: 1px solid var(--primary-color);
+  color: white;
+  padding: 12px;
+  font-family: var(--font-main);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 150px;
+}
+
+.prompt-content textarea:focus {
+  outline: none;
+  border-color: var(--secondary-color);
+  box-shadow: 0 0 8px rgba(0, 255, 0, 0.3);
+}
+
+.prompt-content .setting-description {
+  margin-bottom: 10px;
+  color: #888;
+}
+
+/* Settings Section Headers */
+.settings-section-header {
+  grid-column: 1 / -1;
+  color: var(--primary-color);
+  font-size: 1.1rem;
+  margin: 20px 0 10px 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
 .save-btn {
   background: var(--secondary-color);
   color: black;
@@ -1050,6 +1137,36 @@ body {
     grid-template-columns: 1fr;
   }
   
+  /* Prompt cards full width and more compact on mobile */
+  .prompt-card {
+    margin-bottom: 15px;
+  }
+  
+  .prompt-header {
+    padding: 12px;
+  }
+  
+  .prompt-header label {
+    font-size: 0.85rem;
+  }
+  
+  .prompt-content textarea {
+    font-size: 0.8rem;
+    padding: 10px;
+    min-height: 120px;
+  }
+  
+  .settings-tabs {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--primary-color) transparent;
+  }
+  
+  .settings-tab {
+    white-space: nowrap;
+    font-size: 0.75rem;
+  }
+  
   /* Removed: nav labels now shown on mobile */
   
   .model-picker,
@@ -1081,11 +1198,26 @@ body {
   }
   
   .settings-tabs {
-    font-size: 0.8rem;
+    font-size: 0.7rem;
+    gap: 4px;
   }
   
   .settings-tab {
-    padding: 8px 12px;
+    padding: 6px 8px;
+    font-size: 0.7rem;
+  }
+  
+  .prompt-header {
+    padding: 10px;
+  }
+  
+  .prompt-header label {
+    font-size: 0.8rem;
+  }
+  
+  .prompt-content textarea {
+    font-size: 0.75rem;
+    min-height: 100px;
   }
 }
 

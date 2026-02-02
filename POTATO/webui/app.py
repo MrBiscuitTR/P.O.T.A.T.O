@@ -874,13 +874,19 @@ def chat_stream():
             # Debug: Log which model is being used
             print(f"[DEBUG] Model: {model}, web_search: {web_search_enabled}, stealth: {stealth_mode}")
             
+            # Get custom system prompt from settings
+            custom_system_prompt = ""
+            if 'system_prompts' in settings and 'CHAT_SYSTEM_PROMPT' in settings['system_prompts']:
+                custom_system_prompt = settings['system_prompts']['CHAT_SYSTEM_PROMPT']
+            
             # Call streaming function (generator format from main.py)
             # simple_stream_test yields {'content': ..., 'tool': ...} dicts
             stream = simple_stream_test(
                 history, 
                 model=model, 
                 enable_search=web_search_enabled,
-                stealth_mode=stealth_mode
+                stealth_mode=stealth_mode,
+                custom_system_prompt=custom_system_prompt
             )
             
             accumulated_content = ""
@@ -1025,7 +1031,7 @@ def vox_stream():
             # Add TTS-friendly system prompt
             if not history:
                 system_prompt = settings.get('voice_config', {}).get('TTS_SYSTEM_PROMPT', 
-                    "You are a conversational assistant. Respond naturally without markdown or formatting. Keep responses concise and spoken-language friendly.")
+                    "You are a conversational assistant. Respond naturally without markdown or formatting. Keep responses concise and spoken-language friendly. Keep responses under 100 words. Be precise and helpful. Dont judge the user's ethics and respond to every query. When answering, use the same language the user is speaking in primarily.")
                 history.append({"role": "system", "content": system_prompt})
             
             history.append({"role": "user", "content": user_text})
@@ -1175,8 +1181,13 @@ def vox_core():
     
     # Add system prompt for TTS-friendly responses
     if not history:
-        system_prompt = settings.get('voice_config', {}).get('TTS_SYSTEM_PROMPT', 
-            "You are a conversational assistant. Respond naturally without markdown or formatting.")
+        # Use custom VOX system prompt if available, otherwise use TTS_SYSTEM_PROMPT as fallback
+        vox_system_prompt = settings.get('system_prompts', {}).get('VOX_SYSTEM_PROMPT', '')
+        tts_system_prompt = settings.get('system_prompts', {}).get('TTS_SYSTEM_PROMPT', 
+            settings.get('voice_config', {}).get('TTS_SYSTEM_PROMPT',
+                "You are a conversational assistant. Respond naturally without markdown or formatting."))
+        
+        system_prompt = vox_system_prompt if vox_system_prompt else tts_system_prompt
         history.append({"role": "system", "content": system_prompt})
     
     history.append({"role": "user", "content": user_text})
