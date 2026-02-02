@@ -497,36 +497,59 @@ function updateBotMessage(id, data) {
         }
     }
     
-    if (data.tool_status || data.tool) {
-        const toolMsg = data.tool_status || data.tool;
-        console.log('[Tool]', toolMsg);
+    if (data.tool_status || data.tool || data.tool_name || data.tool_args || data.tool_result) {
+        const toolMsg = data.tool_status || data.tool || (data.tool_name ? `🔧 ${data.tool_name.replace('potatool_', '').replace(/_/g, ' ')}` : 'Tool executing...');
+        console.log('[Tool]', toolMsg, data);
         
         // Show tool activity in Thinking & Tools section
         thinkingSection.style.display = 'block';
         
-        // Create expandable tool status container
-        const toolContainer = document.createElement('div');
-        toolContainer.className = 'tool-call-container';
+        // Try to find last tool container to update it, or create new one
+        let toolContainer = thinkingContent._lastToolContainer;
+        let detailDiv, toolId;
         
-        // Create tool status line (clickable header)
-        const toolDiv = document.createElement('div');
-        toolDiv.className = 'tool-status-line';
-        const toolId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        // Check if we should update existing container or create new one
+        // Update if: same tool name, or if last container still has placeholder
+        const shouldUpdate = toolContainer && (
+            (data.tool_name && toolContainer.dataset.toolName === data.tool_name) ||
+            toolContainer.querySelector('.tool-detail-line')?.textContent?.includes('Details will appear here')
+        );
         
-        // Add chevron and message
-        toolDiv.innerHTML = `
-            <span class="tool-toggle" id="${toolId}-toggle">
-                <i class="fas fa-chevron-right"></i>
-            </span>
-            <span class="tool-message">${toolMsg}</span>
-        `;
+        if (shouldUpdate) {
+            // Update existing container
+            console.log('[Tool] Updating existing tool container');
+            detailDiv = toolContainer.querySelector('.tool-detail-section');
+            toolId = detailDiv.id.replace('-detail', '');
+        } else {
+            // Create new expandable tool status container
+            console.log('[Tool] Creating new tool container');
+            toolContainer = document.createElement('div');
+            toolContainer.className = 'tool-call-container';
+            if (data.tool_name) toolContainer.dataset.toolName = data.tool_name;
+            
+            // Create tool status line (clickable header)
+            const toolDiv = document.createElement('div');
+            toolDiv.className = 'tool-status-line';
+            toolId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+            
+            // Add chevron and message
+            toolDiv.innerHTML = `
+                <span class="tool-toggle" id="${toolId}-toggle">
+                    <i class="fas fa-chevron-right"></i>
+                </span>
+                <span class="tool-message">${toolMsg}</span>
+            `;
+            
+            // Create detail section (collapsed by default)
+            detailDiv = document.createElement('div');
+            detailDiv.className = 'tool-detail-section collapsed';
+            detailDiv.id = `${toolId}-detail`;
+            
+            toolContainer.appendChild(toolDiv);
+            toolContainer.appendChild(detailDiv);
+        }
         
-        // Create detail section (collapsed by default)
-        const detailDiv = document.createElement('div');
-        detailDiv.className = 'tool-detail-section collapsed';
-        detailDiv.id = `${toolId}-detail`;
-        
-        // Add full details if available
+        // Build/update details
         let detailHTML = '';
         
         if (data.tool_name) {
@@ -534,11 +557,18 @@ function updateBotMessage(id, data) {
         }
         
         if (data.tool_args) {
-            const argsStr = typeof data.tool_args === 'string' 
-                ? data.tool_args 
-                : JSON.stringify(data.tool_args, null, 2);
-            detailHTML += `<div class="tool-detail-line"><strong>Parameters:</strong></div>`;
-            detailHTML += `<pre class="tool-args-pre">${argsStr}</pre>`;
+            // Parse and display in field: value format
+            try {
+                const argsObj = typeof data.tool_args === 'string' ? JSON.parse(data.tool_args) : data.tool_args;
+                Object.entries(argsObj).forEach(([key, value]) => {
+                    detailHTML += `<div class="tool-detail-line"><strong>${key}:</strong> ${value}</div>`;
+                });
+            } catch (e) {
+                // Fallback to JSON
+                const argsStr = typeof data.tool_args === 'string' ? data.tool_args : JSON.stringify(data.tool_args, null, 2);
+                detailHTML += `<div class="tool-detail-line"><strong>Parameters:</strong></div>`;
+                detailHTML += `<pre class="tool-args-pre">${argsStr}</pre>`;
+            }
         }
         
         if (data.tool_result) {
@@ -546,54 +576,52 @@ function updateBotMessage(id, data) {
             detailHTML += `<pre class="tool-result-pre">${data.tool_result}</pre>`;
         }
         
-        // If no details yet, show placeholder
-        if (!detailHTML) {
-            detailHTML = `<div class="tool-detail-line" style="color: #888; font-style: italic;">Details will appear here...</div>`;
+        // Only use placeholder if this is a new container with no details
+        if (!detailHTML && !shouldUpdate) {
+            detailHTML = `<div class="tool-detail-line" style="color: #888; font-style: italic;">Loading details...</div>`;
         }
         
-        detailDiv.innerHTML = detailHTML;
+        if (detailHTML) {
+            detailDiv.innerHTML = detailHTML;
+        }
         
-        // Assemble container - always add detail div
-        toolContainer.appendChild(toolDiv);
-        toolContainer.appendChild(detailDiv);
-        
-        // Make entire container clickable to toggle details
-        toolContainer.style.cursor = 'pointer';
-        toolContainer.onclick = (e) => {
-            console.log('[Tool Click] Container clicked, toolId:', toolId);
-            
-            const details = document.getElementById(`${toolId}-detail`);
-            const toggle = document.getElementById(`${toolId}-toggle`);
-            
-            console.log('[Tool Click] Found elements:', { details: !!details, toggle: !!toggle });
-            
-            if (details && toggle) {
-                if (details.classList.contains('collapsed')) {
-                    console.log('[Tool Click] Expanding...');
-                    details.classList.remove('collapsed');
-                    toggle.innerHTML = '<i class="fas fa-chevron-down"></i>';
-                } else {
-                    console.log('[Tool Click] Collapsing...');
-                    details.classList.add('collapsed');
-                    toggle.innerHTML = '<i class="fas fa-chevron-right"></i>';
+        // If this is a new container (not updating), add click handler and insert into DOM
+        if (!shouldUpdate) {
+            // Make entire container clickable to toggle details
+            toolContainer.style.cursor = 'pointer';
+            toolContainer.onclick = (e) => {
+                console.log('[Tool Click] Container clicked, toolId:', toolId);
+                
+                const details = document.getElementById(`${toolId}-detail`);
+                const toggle = document.getElementById(`${toolId}-toggle`);
+                
+                if (details && toggle) {
+                    if (details.classList.contains('collapsed')) {
+                        console.log('[Tool Click] Expanding...');
+                        details.classList.remove('collapsed');
+                        toggle.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                    } else {
+                        console.log('[Tool Click] Collapsing...');
+                        details.classList.add('collapsed');
+                        toggle.innerHTML = '<i class="fas fa-chevron-right"></i>';
+                    }
                 }
+            };
+            
+            // CRITICAL: Maintain chronological order - insert after last insertion point
+            const lastPoint = thinkingContent._lastInsertPoint || thinkingContent.lastChild;
+            if (lastPoint && lastPoint.nextSibling) {
+                thinkingContent.insertBefore(toolContainer, lastPoint.nextSibling);
             } else {
-                console.error('[Tool Click] Missing elements!', { detailsId: `${toolId}-detail`, toggleId: `${toolId}-toggle` });
+                thinkingContent.appendChild(toolContainer);
             }
-        };
-        
-        // CRITICAL: Maintain chronological order - insert after last insertion point
-        const lastPoint = thinkingContent._lastInsertPoint || thinkingContent.lastChild;
-        if (lastPoint && lastPoint.nextSibling) {
-            thinkingContent.insertBefore(toolContainer, lastPoint.nextSibling);
-        } else {
-            thinkingContent.appendChild(toolContainer);
+            
+            // Update last insertion point to this tool container
+            thinkingContent._lastInsertPoint = toolContainer;
+            thinkingContent._lastToolContainer = toolContainer;
+            // Clear current thinking chunk so next thinking creates a new one
+            thinkingContent._currentThinkingChunk = null;
         }
-        
-        // Update last insertion point to this tool container
-        thinkingContent._lastInsertPoint = toolContainer;
-        // Clear current thinking chunk so next thinking creates a new one
-        thinkingContent._currentThinkingChunk = null;
         
         // Only auto-scroll if user hasn't manually scrolled up
         const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 20;
@@ -931,24 +959,19 @@ async function loadSession(id) {
         const chatWindow = document.getElementById('chat-window');
         chatWindow.innerHTML = '';
         
-        chat.messages.forEach(msg => {
+        chat.messages.forEach((msg, index) => {
             if (msg.role !== 'system') {
                 if (msg.role === 'user') {
                     appendMessage(msg.content, 'user');
                 } else if (msg.role === 'assistant') {
-                    // Skip ONLY internal tool call messages (no content, just tool_calls)
-                    if (msg.tool_calls && msg.tool_calls.length > 0 && (!msg.content || msg.content.trim() === '')) {
-                        return; // Don't render empty assistant messages with tool_calls
-                    }
-                    
-                    // Skip assistant messages that are ONLY unexecuted tool call JSON
+                    // Skip assistant messages that are ONLY unexecuted tool call JSON text
                     if (msg.content && msg.content.trim().match(/^\{"name":\s*"potatool_\w+"/)) {
                         return; // Don't render unexecuted tool call JSON
                     }
                     
-                    // If message has content, render it (even if it also has tool_calls)
-                    if (!msg.content || msg.content.trim() === '') {
-                        return; // Don't render empty messages
+                    // Skip intermediate tool call messages (empty content with tool_calls) - NO EXTRA BUBBLES
+                    if ((!msg.content || msg.content.trim() === '')) {
+                        return; // Don't render messages without actual response content
                     }
                     
                     // Bot message - create ONE bubble with correct model label
@@ -960,68 +983,76 @@ async function loadSession(id) {
                     // Use model from message JSON, NOT currentModel
                     const displayModel = msg.model || 'Unknown Model';
                     
-                    // Build thinking section with actual thinking text and tool calls from history
-                    const hasThinking = msg._thinking && msg._thinking.trim();
-                    const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
-                    
-                    let thinkingSectionHTML = '';
-                    if (hasThinking || hasToolCalls) {
-                        thinkingSectionHTML = `
-                        <div class="thinking-section" id="${msgId}-thinking-section" style="display: block;">
-                          <div class="thinking-header" onclick="toggleThinking('${msgId}')">
-                            <span><i class="fas fa-brain"></i> Thinking & Tools</span>
-                            <span class="thinking-toggle collapsed" id="${msgId}-thinking-toggle"><i class="fas fa-chevron-down"></i></span>
-                          </div>
-                          <div class="thinking-content collapsed" id="${msgId}-thinking-content">`;
-                        
-                        // Add thinking text if exists
-                        if (hasThinking) {
-                            thinkingSectionHTML += `<div class="thinking-text">${msg._thinking}</div>`;
+                    // Collect tool calls from preceding messages (backward scan until last user message)
+                    const allToolCalls = [];
+                    for (let i = index - 1; i >= 0; i--) {
+                        const prevMsg = chat.messages[i];
+                        if (prevMsg.role === 'user') break; // Stop at previous user message
+                        if (prevMsg.role === 'assistant' && prevMsg.tool_calls && prevMsg.tool_calls.length > 0) {
+                            // Add tool calls in order (since we're going backwards, unshift instead of push)
+                            allToolCalls.unshift(...prevMsg.tool_calls);
                         }
-                        
-                        // Add tool calls with full parameters
-                        if (hasToolCalls) {
-                            msg.tool_calls.forEach(toolCall => {
-                                const toolName = toolCall.function.name;
-                                const toolArgs = toolCall.function.arguments;
-                                const toolId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-                                
-                                const argsStr = typeof toolArgs === 'string' 
-                                    ? toolArgs 
-                                    : JSON.stringify(toolArgs, null, 2);
-                                
-                                thinkingSectionHTML += `
-                                <div class="tool-call-container" style="cursor: pointer;" onclick="(function(e) {
-                                    e.stopPropagation();
-                                    const details = document.getElementById('${toolId}-detail');
-                                    const toggle = document.getElementById('${toolId}-toggle');
-                                    if (details && toggle) {
-                                        if (details.classList.contains('collapsed')) {
-                                            details.classList.remove('collapsed');
-                                            toggle.innerHTML = '<i class=\"fas fa-chevron-down\"></i>';
-                                        } else {
-                                            details.classList.add('collapsed');
-                                            toggle.innerHTML = '<i class=\"fas fa-chevron-right\"></i>';
-                                        }
-                                    }
-                                })(event)">
-                                    <div class="tool-status-line">
-                                        <span class="tool-toggle" id="${toolId}-toggle">
-                                            <i class="fas fa-chevron-right"></i>
-                                        </span>
-                                        <span class="tool-message">🔧 ${toolName.replace('potatool_', '').replace(/_/g, ' ')}</span>
-                                    </div>
-                                    <div class="tool-detail-section collapsed" id="${toolId}-detail">
-                                        <div class="tool-detail-line"><strong>Function:</strong> ${toolName}</div>
-                                        <div class="tool-detail-line"><strong>Parameters:</strong></div>
-                                        <pre class="tool-args-pre">${argsStr}</pre>
-                                    </div>
-                                </div>`;
-                            });
-                        }
-                        
-                        thinkingSectionHTML += `</div></div>`;
                     }
+                    // Also add tool calls from current message if any
+                    if (msg.tool_calls && msg.tool_calls.length > 0) {
+                        allToolCalls.push(...msg.tool_calls);
+                    }
+                    
+                    // ALWAYS build thinking section (even if empty) - matches live generation structure
+                    const hasThinking = msg._thinking && msg._thinking.trim();
+                    const hasToolCalls = allToolCalls.length > 0;
+                    
+                    // Always create thinking section structure
+                    let thinkingSectionHTML = `
+                    <div class="thinking-section" id="${msgId}-thinking-section" style="display: block;">
+                      <div class="thinking-header" onclick="toggleThinking('${msgId}')">
+                        <span><i class="fas fa-brain"></i> Thinking & Tools</span>
+                        <span class="thinking-toggle collapsed" id="${msgId}-thinking-toggle"><i class="fas fa-chevron-down"></i></span>
+                      </div>
+                      <div class="thinking-content collapsed" id="${msgId}-thinking-content">`;
+                    
+                    // Add thinking text if exists
+                    if (hasThinking) {
+                        thinkingSectionHTML += `<div class="thinking-text">${msg._thinking}</div>`;
+                    }
+                    
+                    // Add tool calls with full parameters (field: value format)
+                    if (hasToolCalls) {
+                        allToolCalls.forEach((toolCall, idx) => {
+                            const toolName = toolCall.function.name;
+                            const toolArgs = toolCall.function.arguments;
+                            const toolId = `tool-${msgId}-${idx}`;
+                            
+                            // Parse arguments for pretty display (field: value)
+                            let argsDisplay = '';
+                            try {
+                                const argsObj = typeof toolArgs === 'string' ? JSON.parse(toolArgs) : toolArgs;
+                                argsDisplay = Object.entries(argsObj)
+                                    .map(([key, value]) => `<div class="tool-detail-line"><strong>${key}:</strong> ${value}</div>`)
+                                    .join('');
+                            } catch (e) {
+                                // Fallback to JSON string if parsing fails
+                                argsDisplay = `<pre class="tool-args-pre">${typeof toolArgs === 'string' ? toolArgs : JSON.stringify(toolArgs, null, 2)}</pre>`;
+                            }
+                            
+                            thinkingSectionHTML += `
+                            <div class="tool-call-container" data-tool-id="${toolId}" style="cursor: pointer;">
+                                <div class="tool-status-line">
+                                    <span class="tool-toggle" id="${toolId}-toggle">
+                                        <i class="fas fa-chevron-right"></i>
+                                    </span>
+                                    <span class="tool-message">🔧 ${toolName.replace('potatool_', '').replace(/_/g, ' ')}</span>
+                                </div>
+                                <div class="tool-detail-section collapsed" id="${toolId}-detail">
+                                    <div class="tool-detail-line"><strong>Function:</strong> ${toolName}</div>
+                                    ${argsDisplay}
+                                </div>
+                            </div>`;
+                        });
+                    }
+                    
+                    // Close thinking section (always present)
+                    thinkingSectionHTML += `</div></div>`;
                     
                     msgDiv.innerHTML = `
                         <div class="model-badge">${displayModel}</div>
@@ -1030,6 +1061,27 @@ async function loadSession(id) {
                     `;
                     
                     chatWindow.appendChild(msgDiv);
+                    
+                    // Attach click handlers to tool containers
+                    if (hasToolCalls) {
+                        msgDiv.querySelectorAll('.tool-call-container').forEach(container => {
+                            container.addEventListener('click', function(e) {
+                                e.stopPropagation();
+                                const toolId = this.getAttribute('data-tool-id');
+                                const details = document.getElementById(toolId + '-detail');
+                                const toggle = document.getElementById(toolId + '-toggle');
+                                if (details && toggle) {
+                                    if (details.classList.contains('collapsed')) {
+                                        details.classList.remove('collapsed');
+                                        toggle.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                                    } else {
+                                        details.classList.add('collapsed');
+                                        toggle.innerHTML = '<i class="fas fa-chevron-right"></i>';
+                                    }
+                                }
+                            });
+                        });
+                    }
                     
                     // Render markdown content
                     const contentDiv = document.getElementById(`${msgId}-content`);

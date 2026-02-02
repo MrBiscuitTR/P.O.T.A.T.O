@@ -395,26 +395,6 @@ def stop_mcp_server():
         finally:
             _mcp_server_process = None
 
-def cleanup_on_exit():
-    """Cleanup function to run on app shutdown"""
-    print("\nCleaning up...")
-    
-    # Stop MCP server
-    stop_mcp_server()
-    
-    # Unload all models
-    try:
-        unload_tts_models()
-    except:
-        pass
-    
-    try:
-        unload_whisper_model()
-    except:
-        pass
-    
-    print("Cleanup complete")
-
 def find_working_microphone():
     """Find a working microphone device by testing all available devices"""
     try:
@@ -1418,15 +1398,6 @@ def transcribe_realtime():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# Register cleanup handlers
-atexit.register(cleanup_on_exit)
-
-def signal_handler(sig, frame):
-    """Handle SIGINT (Ctrl+C) and SIGTERM"""
-    print("\nShutting down gracefully...")
-    cleanup_on_exit()
-    exit(0)
-
 def cleanup_handler():
     """Ensure models are unloaded on exit"""
     print("\n[CLEANUP] Shutting down gracefully...")
@@ -1492,7 +1463,34 @@ def cleanup_handler():
     print("[CLEANUP] Cleanup complete")
     sys.exit(0)
 
+def cleanup_on_exit():
+    """Cleanup function to run on app shutdown"""
+    print("\nCleaning up...")
+    # Stop MCP server
+    stop_mcp_server()
+    # Unload all models
+    try:
+        unload_tts_models()
+    except:
+        pass
+    try:
+        unload_whisper_model()
+    except:
+        pass
+    try:
+        cleanup_handler()
+    except:
+        pass
+    print("Cleanup complete")
 
+# Register cleanup handlers
+atexit.register(cleanup_on_exit)
+
+def signal_handler(sig, frame):
+    """Handle SIGINT (Ctrl+C) and SIGTERM"""
+    print("\nShutting down gracefully...")
+    cleanup_on_exit()
+    exit(0)
 # Register cleanup
 atexit.register(cleanup_handler)
 # Register signal handlers

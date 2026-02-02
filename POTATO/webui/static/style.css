@@ -1802,7 +1802,7 @@ html, body {
   background: rgba(0, 243, 255, 0.15);
 }
 
-.thinking-content {
+/* .thinking-content {
   padding: 12px;
   max-height: 300px;
   overflow-y: auto;
@@ -1811,6 +1811,17 @@ html, body {
   white-space: pre-wrap;
   word-wrap: break-word;
   line-height: 1.5;
+} */
+
+.thinking-content {
+    padding: 12px;
+    max-height: 600px;
+    overflow-y: scroll;
+    font-size: 0.85em;
+    color: #aaa;
+    word-wrap: break-word;
+    line-height: 1.5;
+    min-height: 200px;
 }
 
 .thinking-content p {
@@ -1845,20 +1856,20 @@ html, body {
 }
 
 .tool-status-line {
-  padding: 4px 10px;
-  margin: 3px 0;
-  font-size: 0.9em;
-  color: var(--secondary-color);
-  border-left: 3px solid rgba(0, 255, 157, 0.6);
-  background: rgba(0, 255, 157, 0.08);
-  font-family: monospace;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border-radius: 3px;
-  transition: background 0.2s ease;
-  min-height: 24px;
-  line-height: 1.2;
+    padding: 4px 10px;
+    margin: 6px 0;
+    font-size: 0.9em;
+    color: var(--secondary-color);
+    border-left: 3px solid rgba(0, 255, 157, 0.6);
+    background: rgba(0, 255, 157, 0.08);
+    font-family: monospace;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 3px;
+    transition: background 0.2s ease;
+    min-height: 24px;
+    line-height: 1.2;
 }
 
 .tool-status-line:hover {
@@ -1866,7 +1877,8 @@ html, body {
 }
 
 .tool-call-container {
-  margin: 5px 0;
+  margin: 2px 0;
+  cursor: pointer;
 }
 
 .tool-toggle {
@@ -1892,6 +1904,18 @@ html, body {
   align-items: center;
 }
 
+/* .tool-detail-section {
+  margin-left: 24px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-left: 2px solid rgba(0, 255, 157, 0.3);
+  border-radius: 0 0 3px 3px;
+  font-size: 0.85em;
+  max-height: 500px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease, opacity 0.3s ease;
+} */
+
 .tool-detail-section {
   margin-left: 24px;
   padding: 8px 12px;
@@ -1902,13 +1926,13 @@ html, body {
   max-height: 500px;
   overflow-y: auto;
   transition: max-height 0.3s ease, opacity 0.3s ease;
+  margin-top: 5px;
 }
 
 .tool-detail-section.collapsed {
+  display: none;
+  content: "";
   max-height: 0;
-  opacity: 0;
-  overflow: hidden;
-  padding: 0 12px;
 }
 
 .tool-detail-line {
