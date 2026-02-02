@@ -57,9 +57,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update stats every 2 seconds
     setInterval(updateStats, 2000);
     
-    // Search chats
+    // Search chats with debouncing (less sensitive)
+    let searchTimeout;
     document.querySelector('.search-box input').addEventListener('input', (e) => {
-        loadChatList(e.target.value);
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            loadChatList(e.target.value);
+        }, 300); // 300ms delay
     });
     
     // Enter to send message
@@ -91,7 +95,26 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Hamburger menu for mobile
     document.getElementById('hamburger-left').addEventListener('click', () => {
-        document.getElementById('left-sidebar').classList.toggle('mobile-open');
+        toggleMobileMenu();
+    });
+    
+    // Close chat list or navbar when clicking on overlay
+    document.body.addEventListener('click', (e) => {
+        if (e.target === document.body && window.innerWidth <= 768) {
+            // Check if overlay is visible by checking the pseudo-element
+            const styles = window.getComputedStyle(document.body, '::before');
+            const overlayVisible = styles.getPropertyValue('content') !== 'none' && styles.getPropertyValue('content') !== '';
+            
+            if (overlayVisible) {
+                // Close whichever is open
+                if (document.body.classList.contains('sidebar-open')) {
+                    closeMobileSidebar();
+                }
+                if (document.body.classList.contains('chat-list-open')) {
+                    closeChatList();
+                }
+            }
+        }
     });
     
     // Auto-scroll detection for chat window
@@ -247,14 +270,49 @@ function switchTab(tabId) {
 // Mobile menu toggle
 function toggleMobileMenu() {
     const sidebar = document.getElementById('left-sidebar');
+    const isOpen = sidebar.classList.contains('mobile-open');
+    
     sidebar.classList.toggle('mobile-open');
-    document.body.classList.toggle('sidebar-open');
+    
+    // Properly toggle overlay class
+    if (isOpen) {
+        // Closing
+        document.body.classList.remove('sidebar-open');
+    } else {
+        // Opening
+        document.body.classList.add('sidebar-open');
+    }
 }
 
 function closeMobileSidebar() {
     const sidebar = document.getElementById('left-sidebar');
     sidebar.classList.remove('mobile-open');
     document.body.classList.remove('sidebar-open');
+}
+
+// Chat list toggle for mobile
+function toggleChatList() {
+    const chatSidebar = document.querySelector('.chat-history-sidebar');
+    const isOpen = chatSidebar.classList.contains('mobile-open');
+    
+    chatSidebar.classList.toggle('mobile-open');
+    
+    // Properly toggle overlay class
+    if (isOpen) {
+        // Closing
+        document.body.classList.remove('chat-list-open');
+    } else {
+        // Opening
+        document.body.classList.add('chat-list-open');
+        // Load chat list if not already loaded
+        loadChatList();
+    }
+}
+
+function closeChatList() {
+    const chatSidebar = document.querySelector('.chat-history-sidebar');
+    chatSidebar.classList.remove('mobile-open');
+    document.body.classList.remove('chat-list-open');
 }
 
 // --- CHAT FUNCTIONS ---
@@ -953,7 +1011,13 @@ async function loadChatList(query = '') {
             
             const titleSpan = document.createElement('span');
             titleSpan.textContent = chat.title;
-            titleSpan.onclick = () => loadSession(chat.id);
+            titleSpan.onclick = () => {
+                loadSession(chat.id);
+                // Close chat list on mobile after selection
+                if (window.innerWidth <= 768) {
+                    closeChatList();
+                }
+            };
             titleSpan.style.flex = '1';
             titleSpan.style.cursor = 'pointer';
             
@@ -2148,7 +2212,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // --- RIGHT SIDEBAR (RAG) ---
 function toggleRightSidebar() {
-    document.getElementById('right-sidebar').classList.toggle('open');
+    const sidebar = document.getElementById('right-sidebar');
+    const isOpen = sidebar.classList.contains('open');
+    
+    sidebar.classList.toggle('open');
+    
+    // On mobile, add/remove overlay
+    if (window.innerWidth <= 768) {
+        let overlay = document.getElementById('rag-overlay');
+        
+        if (!isOpen) {
+            // Opening sidebar - create overlay
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = 'rag-overlay';
+                overlay.className = 'rag-mobile-overlay';
+                overlay.onclick = () => toggleRightSidebar(); // Close on click
+                document.body.appendChild(overlay);
+            }
+            // Trigger reflow to enable transition
+            overlay.offsetHeight;
+            overlay.classList.add('visible');
+        } else {
+            // Closing sidebar - remove overlay
+            if (overlay) {
+                overlay.classList.remove('visible');
+                setTimeout(() => overlay.remove(), 300); // Wait for fade transition
+            }
+        }
+    }
 }
 
 // --- RAG FOLDER SELECTION ---

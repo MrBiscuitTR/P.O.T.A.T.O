@@ -21,7 +21,7 @@ try:
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 except ImportError:
     print("Package 'chatterbox-tts' not installed. Run: pip install chatterbox-tts")
-    exit(1)
+    raise RuntimeError("chatterbox-tts package not installed")
 
 # Folders & paths
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -66,7 +66,7 @@ def select_output_device():
     output_devices = [i for i, d in enumerate(devices) if d['max_output_channels'] > 0]
     if not output_devices:
         print("No output devices!")
-        exit(1)
+        raise RuntimeError("No audio output devices available")
 
     for i in output_devices:
         d = devices[i]

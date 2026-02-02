@@ -885,6 +885,37 @@ body {
   transform: translateX(0);
 }
 
+/* Mobile overlay for RAG sidebar */
+.rag-mobile-overlay {
+  display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 99;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  backdrop-filter: blur(3px);
+}
+
+.rag-mobile-overlay.visible {
+  opacity: 1;
+}
+
+@media (max-width: 768px) {
+  .rag-mobile-overlay {
+    display: block;
+  }
+  
+  .right-sidebar {
+    position: fixed;
+    z-index: 150;
+  }
+}
+
+
 .right-sidebar .sidebar-header {
   display: flex;
   justify-content: space-between;
@@ -1223,9 +1254,9 @@ body {
 
 /* Portrait orientation */
 @media (orientation: portrait) and (max-width: 768px) {
-  .chat-window {
+  /* .chat-window {
     max-height: 50vh;
-  }
+  } */
   
   .input-area textarea {
     max-height: 100px;
@@ -1256,7 +1287,8 @@ body {
   font-size: 1.2rem;
 }
 
-.rag-toggle-btn {
+.rag-toggle-btn,
+.chat-list-toggle-btn {
   display: none;
   background: transparent;
   border: 1px solid var(--primary-color);
@@ -1444,14 +1476,72 @@ body {
   }
 }
 
+/* --- DISABLE HOVER EFFECTS ON TOUCH DEVICES --- */
+@media (hover: none) and (pointer: coarse) {
+  /* Disable all hover effects on touch devices */
+  * {
+    transition: none !important;
+  }
+  
+  .nav-btn:hover,
+  .nav-btn.active {
+    background: rgba(0, 243, 255, 0.1) !important;
+    border-color: var(--primary-color) !important;
+    box-shadow: none !important;
+  }
+  
+  button:hover,
+  .widget-icon:hover {
+    transform: none !important;
+    box-shadow: none !important;
+  }
+  
+  .chat-list li:hover {
+    background: rgba(0, 243, 255, 0.05) !important;
+  }
+}
+
+/* --- DISABLE HOVER EFFECTS ON TOUCH DEVICES --- */
+@media (hover: none) and (pointer: coarse) {
+  /* Disable all hover animations on touch devices */
+  .nav-btn:hover {
+    background: transparent !important;
+    transform: none !important;
+    box-shadow: none !important;
+  }
+  
+  button:hover,
+  .widget-icon:hover {
+    transform: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+  }
+  
+  .chat-list li:hover {
+    background: transparent !important;
+  }
+  
+  .unload-btn:hover,
+  .new-chat-btn:hover,
+  .send-btn:hover {
+    transform: none !important;
+    box-shadow: none !important;
+  }
+}
+
 /* --- MOBILE RESPONSIVENESS (max-width: 768px) --- */
 @media (max-width: 768px) {
   .mobile-menu-toggle {
     display: block;
   }
   
-  .rag-toggle-btn {
+  /* Show chat list toggle on mobile, hide RAG toggle (it's in sidebar) */
+  .chat-list-toggle-btn {
     display: block;
+  }
+  
+  .rag-toggle-btn {
+    display: none;
   }
   
   .app-container {
@@ -1486,9 +1576,36 @@ body {
     z-index: 250;
   }
   
-  /* Hide chat history on mobile */
+  /* Chat history sidebar - hidden by transform, toggleable */
   .chat-history-sidebar {
-    display: none;
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 350;
+    transform: translateX(-100%);
+    transition: transform 0.3s ease;
+    background: var(--panel-bg);
+    border-right: 2px solid var(--primary-color);
+    display: flex !important;
+    flex-direction: column;
+  }
+  
+  .chat-history-sidebar.mobile-open {
+    transform: translateX(0);
+  }
+  
+  /* Overlay for chat history sidebar */
+  body.chat-list-open::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 340;
   }
   
   .chat-interface {

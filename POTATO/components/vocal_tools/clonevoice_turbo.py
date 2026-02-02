@@ -32,7 +32,7 @@ try:
 except ImportError:
     print("Package 'chatterbox-tts' not installed.")
     print("Run:  pip install chatterbox-tts --no-deps")
-    exit(1)
+    raise RuntimeError("chatterbox-tts package not installed")
 
 # Folders & paths
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -56,7 +56,7 @@ ckpt_path = Path(CKPT_DIR)
 
 if not ckpt_path.is_dir() or not (ckpt_path / "t3_turbo_v1.safetensors").exists():
     print(f"ERROR: Invalid or missing checkpoint: {CKPT_DIR}")
-    exit(1)
+    raise RuntimeError(f"Missing TTS checkpoint: {CKPT_DIR}")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -326,4 +326,4 @@ if __name__ == "__main__":
         shutdown_event.set()
         sd.stop()
         print("\nExited.\n")
-        sys.exit(0)
+        pass  # Exit main loop gracefully

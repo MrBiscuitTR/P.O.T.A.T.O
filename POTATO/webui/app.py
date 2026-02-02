@@ -124,36 +124,81 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
     
     path = os.path.join(CHATS_DIR, f"{session_id}.json")
     if not title:
+        # Check if chat already has a permanent title (not a placeholder)
+        existing_title = None
         if os.path.exists(path):
             try:
                 with open(path, 'r') as f:
-                    title = json.load(f).get('title')
+                    existing_title = json.load(f).get('title')
             except:
                 pass
-        if not title:
-            # Generate title from first user msg using AI
+        
+        # Use existing title if it's not a placeholder (doesn't end with "...")
+        if existing_title and not existing_title.endswith('...'):
+            title = existing_title
+        else:
+            # Generate AI title only if we have both user message AND assistant response
+            user_msg = None
+            ai_response = None
+            
             for m in messages:
-                if m['role'] == 'user' and m['content']:
-                    try:
-                        # Use Ollama to generate a concise title
-                        import ollama
-                        response = ollama.chat(
-                            model='qwen2.5-coder:7b',  # Fast model for title generation
-                            messages=[{
-                                'role': 'system',
-                                'content': 'Generate a very short title (max 25 chars) for this conversation. Just output the title, nothing else.'
-                            }, {
-                                'role': 'user',
-                                'content': m['content'][:200]  # First 200 chars of message
-                            }]
-                        )
-                        title = response['message']['content'].strip().strip('"\'')[:30]
-                    except:
-                        # Fallback to truncated first message
-                        title = m['content'][:27] + "..." if len(m['content']) > 27 else m['content']
+                if m['role'] == 'user' and m['content'] and not user_msg:
+                    user_msg = m['content']
+                elif m['role'] == 'assistant' and m['content'] and not ai_response:
+                    ai_response = m['content']
+                
+                if user_msg and ai_response:
                     break
-            if not title:
-                title = "New Session"
+            
+            # Only generate AI title if we have BOTH messages (not just user message)
+            if user_msg and ai_response:
+                try:
+                    # Use qwen2.5-coder:7b to generate a concise title
+                    import ollama
+                    
+                    context = f"User: {user_msg[:200]}"
+                    context += f"\nAssistant: {ai_response[:200]}"
+                    
+                    response = ollama.chat(
+                        model='qwen2.5-coder:7b',
+                        messages=[{
+                            'role': 'system',
+                            'content': 'Generate a short chat title (max 7 words, no quotes). Only output the title, nothing else. Be specific and descriptive.'
+                        }, {
+                            'role': 'user',
+                            'content': context
+                        }],
+                        options={'num_predict': 30}  # Limit response length
+                    )
+                    title = response['message']['content'].strip().strip('"\'')
+                    
+                    # Truncate if too long
+                    words = title.split()
+                    if len(words) > 7:
+                        title = ' '.join(words[:7])
+                    
+                    # Unload qwen2.5-coder:7b to free VRAM
+                    print(f"[CHAT] Generated title: {title}")
+                    print("[CHAT] Unloading qwen2.5-coder:7b...")
+                    ollama.chat(model='qwen2.5-coder:7b', messages=[], keep_alive=0)
+                    print("[CHAT] Title generator unloaded")
+                    
+                except Exception as e:
+                    print(f"[CHAT] Error generating AI title: {e}")
+                    # Fallback to placeholder or existing
+                    if existing_title:
+                        title = existing_title
+                    elif user_msg:
+                        title = user_msg[:27] + "..." if len(user_msg) > 27 else user_msg
+            else:
+                # Don't have both messages yet - use placeholder or existing
+                if existing_title:
+                    title = existing_title
+                elif user_msg:
+                    title = user_msg[:27] + "..." if len(user_msg) > 27 else user_msg
+        
+        if not title:
+            title = "New Session"
     
     data = {
         "id": session_id,
@@ -1396,71 +1441,88 @@ def transcribe_realtime():
         return jsonify({"error": str(e)}), 500
 
 def cleanup_handler():
-    """Ensure models are unloaded on exit - single consolidated handler"""
+    """Ensure models are unloaded on exit - single consolidated handler with robust error handling"""
     print("\n[CLEANUP] Shutting down gracefully...")
+    
+    # Unload TTS (with error handling)
     try:
-        # Unload TTS
+        print("[CLEANUP] Unloading TTS models...")
         unload_tts_models()
-        
-        # Unload Whisper
+    except Exception as e:
+        print(f"[CLEANUP] Error unloading TTS (non-fatal): {e}")
+    
+    # Unload Whisper (with error handling)
+    try:
+        print("[CLEANUP] Unloading Whisper...")
         unload_whisper_model()
+    except Exception as e:
+        print(f"[CLEANUP] Error unloading Whisper (non-fatal): {e}")
+    
+    # Unload all Ollama models (critical - most important cleanup)
+    print("[CLEANUP] Unloading Ollama models...")
+    try:
+        import requests
+        import time
         
-        # Unload all Ollama models using API (more reliable)
-        print("[CLEANUP] Unloading Ollama models...")
+        # Get active models
         try:
-            import requests
-            # Get active models and unload them
             ps_result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
-            if ps_result.returncode == 0 and ps_result.stdout.strip():
-                lines = ps_result.stdout.strip().split('\\n')[1:]  # Skip header
-                models_to_unload = [line.split()[0] for line in lines if line.strip()]
-                
-                print(f"[CLEANUP] Found {len(models_to_unload)} models to unload")
-                
-                for model_name in models_to_unload:
-                    print(f"[CLEANUP] Unloading {model_name}...")
+        except Exception as e:
+            print(f"[CLEANUP] Could not query models: {e}")
+            ps_result = None
+        
+        if ps_result and ps_result.returncode == 0 and ps_result.stdout.strip():
+            lines = ps_result.stdout.strip().split('\n')[1:]  # Skip header
+            models_to_unload = [line.split()[0] for line in lines if line.strip()]
+            
+            print(f"[CLEANUP] Found {len(models_to_unload)} model(s) to unload: {models_to_unload}")
+            
+            for model_name in models_to_unload:
+                print(f"[CLEANUP] Unloading {model_name}...")
+                try:
+                    # Try API first
+                    response = requests.post('http://localhost:11434/api/generate', 
+                                json={'model': model_name, 'keep_alive': 0},
+                                timeout=15)
+                    if response.status_code == 200:
+                        print(f"[CLEANUP] ✓ {model_name} unloaded via API")
+                    else:
+                        print(f"[CLEANUP] API returned HTTP {response.status_code}, trying CLI...")
+                        subprocess.run(['ollama', 'stop', model_name], timeout=5, check=False)
+                except requests.Timeout:
+                    print(f"[CLEANUP] API timeout for {model_name}, trying CLI...")
                     try:
-                        # Use API to set keep_alive to 0 (immediate unload)
-                        response = requests.post('http://localhost:11434/api/generate', 
-                                    json={'model': model_name, 'keep_alive': 0},
-                                    timeout=15)  # Longer timeout
-                        if response.status_code == 200:
-                            print(f"[CLEANUP] Successfully unloaded {model_name}")
-                        else:
-                            print(f"[CLEANUP] API returned HTTP {response.status_code} for {model_name}")
-                            # Try CLI as fallback
-                            subprocess.run(['ollama', 'stop', model_name], timeout=5, check=False)
-                    except requests.Timeout:
-                        print(f"[CLEANUP] Timeout unloading {model_name}, trying CLI...")
-                        try:
-                            subprocess.run(['ollama', 'stop', model_name], timeout=5, check=False)
-                        except:
-                            pass
-                    except Exception as e:
-                        print(f"[CLEANUP] Error unloading {model_name}: {e}")
-                
-                # Wait for all unloads to complete
-                print("[CLEANUP] Waiting for models to unload...")
-                import time
-                time.sleep(2)
-                
-                # Verify models are gone
+                        subprocess.run(['ollama', 'stop', model_name], timeout=5, check=False)
+                    except:
+                        print(f"[CLEANUP] CLI also failed for {model_name}")
+                except Exception as e:
+                    print(f"[CLEANUP] Error with {model_name}: {e}")
+            
+            # Wait for unloads to complete
+            print("[CLEANUP] Waiting for models to unload...")
+            time.sleep(2)
+            
+            # Verify
+            try:
                 verify_result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
                 if verify_result.returncode == 0:
-                    remaining = verify_result.stdout.strip().split('\\n')[1:]  # Skip header
-                    if any(line.strip() for line in remaining):
-                        print(f"[CLEANUP] Warning: {len([l for l in remaining if l.strip()])} model(s) still running")
+                    remaining = verify_result.stdout.strip().split('\n')[1:]
+                    remaining_models = [l.split()[0] for l in remaining if l.strip()]
+                    if remaining_models:
+                        print(f"[CLEANUP] ⚠ Warning: {len(remaining_models)} model(s) still running: {remaining_models}")
                     else:
-                        print("[CLEANUP] All models successfully unloaded")
-            else:
-                print("[CLEANUP] No Ollama models running")
-        except Exception as e:
-            print(f"[CLEANUP] Error getting model list: {e}")
-        
+                        print("[CLEANUP] ✓ All Ollama models successfully unloaded")
+            except:
+                print("[CLEANUP] Could not verify model unload status")
+        else:
+            print("[CLEANUP] No Ollama models running")
+            
     except Exception as e:
-        print(f"[CLEANUP] Error during cleanup: {e}")
+        print(f"[CLEANUP] Error during Ollama cleanup (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
     
-    print("[CLEANUP] Cleanup complete")
+    print("[CLEANUP] Cleanup complete\n")
 
 # Single signal handler
 def signal_handler(sig, frame):
