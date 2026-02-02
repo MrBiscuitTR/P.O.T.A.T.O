@@ -25,8 +25,9 @@ from POTATO.components.utilities.get_system_info import json_get_instant_system_
 _tts_turbo_model = None
 _tts_multilingual_model = None
 
-# MCP server process
-_mcp_server_process = None
+# Generation control
+_stop_generation = False
+_current_model = None
 
 # --- TOOL REGISTRY ---
 TOOL_REGISTRY = {
@@ -237,17 +238,38 @@ def get_ollama_models():
 def stop_ollama_inference(model_name=None):
     """Stop ongoing Ollama inference and unload from VRAM"""
     try:
+        import requests
+        
         if model_name:
-            # First stop the model
-            subprocess.run(['ollama', 'stop', model_name], timeout=5)
-            # Then explicitly unload it by setting keep_alive to 0
+            # Use API call with keep_alive=0 to force unload
             try:
-                ollama.chat(model=model_name, messages=[], keep_alive=0)
-            except:
-                pass  # Model might already be stopped
+                requests.post('http://localhost:11434/api/generate', 
+                             json={'model': model_name, 'keep_alive': 0},
+                             timeout=5)
+                print(f"Unloaded {model_name} from VRAM")
+            except Exception as e:
+                print(f"Failed to unload {model_name}: {e}")
+                # Fallback to CLI
+                subprocess.run(['ollama', 'stop', model_name], check=False, timeout=5)
         else:
-            # Stop all models
-            subprocess.run(['ollama', 'ps'], capture_output=True, timeout=5)
+            # Stop all models - get list of running models first
+            try:
+                ps_result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
+                if ps_result.returncode == 0:
+                    lines = ps_result.stdout.strip().split('\\n')[1:]  # Skip header
+                    for line in lines:
+                        if line.strip():
+                            model = line.split()[0]
+                            try:
+                                requests.post('http://localhost:11434/api/generate',
+                                            json={'model': model, 'keep_alive': 0},
+                                            timeout=5)
+                                print(f"Unloaded {model} from VRAM")
+                            except Exception as e:
+                                print(f"Failed to unload {model}: {e}")
+            except Exception as e:
+                print(f"Error getting model list: {e}")
+                subprocess.run(['ollama', 'stop'], check=False, timeout=5)
         return True
     except Exception as e:
         print(f"Error stopping ollama: {e}")
@@ -347,53 +369,6 @@ def unload_whisper_model():
             print("Whisper model unloaded")
     except Exception as e:
         print(f"Error unloading Whisper: {e}")
-
-def start_mcp_server():
-    """Start the MCP SearXNG server"""
-    global _mcp_server_process
-    
-    if _mcp_server_process and _mcp_server_process.poll() is None:
-        print("MCP server already running")
-        return
-    
-    try:
-        mcp_script = os.path.join(BASE_DIR, 'MCP', 'searx_mcp.py')
-        if not os.path.exists(mcp_script):
-            print(f"MCP script not found: {mcp_script}")
-            return
-        
-        # Get Python executable from current environment
-        python_exe = os.path.join(BASE_DIR, '.venv', 'Scripts', 'python.exe')
-        if not os.path.exists(python_exe):
-            python_exe = 'python'  # Fallback to system python
-        
-        _mcp_server_process = subprocess.Popen(
-            [python_exe, mcp_script],
-            cwd=os.path.join(BASE_DIR, 'MCP'),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
-        )
-        print(f"MCP server started with PID: {_mcp_server_process.pid}")
-    except Exception as e:
-        print(f"Error starting MCP server: {e}")
-
-def stop_mcp_server():
-    """Stop the MCP SearXNG server"""
-    global _mcp_server_process
-    
-    if _mcp_server_process and _mcp_server_process.poll() is None:
-        try:
-            _mcp_server_process.terminate()
-            _mcp_server_process.wait(timeout=5)
-            print("MCP server stopped")
-        except subprocess.TimeoutExpired:
-            _mcp_server_process.kill()
-            print("MCP server killed")
-        except Exception as e:
-            print(f"Error stopping MCP server: {e}")
-        finally:
-            _mcp_server_process = None
 
 def find_working_microphone():
     """Find a working microphone device by testing all available devices"""
@@ -896,12 +871,6 @@ def chat_stream():
             # Send session_id immediately so frontend can update chat list
             yield f"data: {json.dumps({'session_id': session_id})}\n\n"
             
-            # Start/stop MCP server based on web search setting AND stealth mode
-            if web_search_enabled and not stealth_mode:
-                start_mcp_server()
-            else:
-                stop_mcp_server()
-            
             # Debug: Log which model is being used
             print(f"[DEBUG] Model: {model}, web_search: {web_search_enabled}, stealth: {stealth_mode}")
             
@@ -922,6 +891,13 @@ def chat_stream():
             
             # Stream format from main.py: {'metadata': {...}}, {'content': text}, {'tool': status}, or {'thinking': text}
             for chunk in stream:
+                # Check if generation should stop
+                global _stop_generation
+                if _stop_generation:
+                    print("[STREAM] Stop flag detected, breaking generator loop")
+                    yield f"data: {json.dumps({'done': True, 'stopped': True})}\n\n"
+                    break
+                
                 # Handle metadata (sent at start with model-specific tags)
                 if 'metadata' in chunk:
                     metadata = chunk['metadata']
@@ -934,6 +910,16 @@ def chat_stream():
                 # Handle tool status
                 if 'tool' in chunk:
                     yield f"data: {json.dumps({'tool_status': chunk['tool']})}\n\n"
+                    continue
+                
+                # Handle tool name and args
+                if 'tool_name' in chunk:
+                    yield f"data: {json.dumps({'tool_name': chunk['tool_name'], 'tool_args': chunk.get('tool_args', {})})}\n\n"
+                    continue
+                
+                # Handle tool result
+                if 'tool_result' in chunk:
+                    yield f"data: {json.dumps({'tool_result': chunk['tool_result']})}\n\n"
                     continue
                 
                 # Handle thinking (direct from model or parsed from tags)
@@ -1399,101 +1385,82 @@ def transcribe_realtime():
         return jsonify({"error": str(e)}), 500
 
 def cleanup_handler():
-    """Ensure models are unloaded on exit"""
+    """Ensure models are unloaded on exit - single consolidated handler"""
     print("\n[CLEANUP] Shutting down gracefully...")
     try:
-        # Stop TTS
-        stop_tts()
+        # Unload TTS
         unload_tts_models()
         
         # Unload Whisper
         unload_whisper_model()
         
-        # Unload VOX models
-        unload_vox()
-        
-        # Stop any ongoing inference
-        stop_inference()
-        
-        # Stop ALL running Ollama models by parsing ollama ps output
-        print("[CLEANUP] Checking for running Ollama models...")
+        # Unload all Ollama models using API (more reliable)
+        print("[CLEANUP] Unloading Ollama models...")
         try:
-            result = subprocess.run(
-                ['ollama', 'ps'],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            
-            if result.returncode == 0 and result.stdout.strip():
-                lines = result.stdout.strip().split('\n')
-                # Skip header line and parse model names
-                if len(lines) > 1:
-                    print(f"[CLEANUP] Found running models:")
-                    for line in lines[1:]:
-                        if line.strip():
-                            # Parse model name (first column)
-                            parts = line.split()
-                            if parts:
-                                model_name = parts[0]
-                                print(f"[CLEANUP] Stopping model: {model_name}")
-                                try:
-                                    subprocess.run(['ollama', 'stop', model_name], timeout=5)
-                                    print(f"[CLEANUP] Stopped: {model_name}")
-                                except Exception as e:
-                                    print(f"[CLEANUP] Error stopping {model_name}: {e}")
-                    
-                    # Verify all models stopped
-                    verify = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
-                    if verify.stdout.strip() and len(verify.stdout.strip().split('\n')) > 1:
-                        print("[CLEANUP] Warning: Some models may still be running")
+            import requests
+            # Get active models and unload them
+            ps_result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
+            if ps_result.returncode == 0 and ps_result.stdout.strip():
+                lines = ps_result.stdout.strip().split('\\n')[1:]  # Skip header
+                models_to_unload = [line.split()[0] for line in lines if line.strip()]
+                
+                print(f"[CLEANUP] Found {len(models_to_unload)} models to unload")
+                
+                for model_name in models_to_unload:
+                    print(f"[CLEANUP] Unloading {model_name}...")
+                    try:
+                        # Use API to set keep_alive to 0 (immediate unload)
+                        response = requests.post('http://localhost:11434/api/generate', 
+                                    json={'model': model_name, 'keep_alive': 0},
+                                    timeout=15)  # Longer timeout
+                        if response.status_code == 200:
+                            print(f"[CLEANUP] Successfully unloaded {model_name}")
+                        else:
+                            print(f"[CLEANUP] API returned HTTP {response.status_code} for {model_name}")
+                            # Try CLI as fallback
+                            subprocess.run(['ollama', 'stop', model_name], timeout=5, check=False)
+                    except requests.Timeout:
+                        print(f"[CLEANUP] Timeout unloading {model_name}, trying CLI...")
+                        try:
+                            subprocess.run(['ollama', 'stop', model_name], timeout=5, check=False)
+                        except:
+                            pass
+                    except Exception as e:
+                        print(f"[CLEANUP] Error unloading {model_name}: {e}")
+                
+                # Wait for all unloads to complete
+                print("[CLEANUP] Waiting for models to unload...")
+                import time
+                time.sleep(2)
+                
+                # Verify models are gone
+                verify_result = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
+                if verify_result.returncode == 0:
+                    remaining = verify_result.stdout.strip().split('\\n')[1:]  # Skip header
+                    if any(line.strip() for line in remaining):
+                        print(f"[CLEANUP] Warning: {len([l for l in remaining if l.strip()])} model(s) still running")
                     else:
-                        print("[CLEANUP] All Ollama models stopped successfully")
-                else:
-                    print("[CLEANUP] No Ollama models running")
+                        print("[CLEANUP] All models successfully unloaded")
             else:
                 print("[CLEANUP] No Ollama models running")
-                
         except Exception as e:
-            print(f"[CLEANUP] Error during Ollama cleanup: {e}")
+            print(f"[CLEANUP] Error getting model list: {e}")
         
     except Exception as e:
         print(f"[CLEANUP] Error during cleanup: {e}")
     
     print("[CLEANUP] Cleanup complete")
-    sys.exit(0)
 
-def cleanup_on_exit():
-    """Cleanup function to run on app shutdown"""
-    print("\nCleaning up...")
-    # Stop MCP server
-    stop_mcp_server()
-    # Unload all models
-    try:
-        unload_tts_models()
-    except:
-        pass
-    try:
-        unload_whisper_model()
-    except:
-        pass
-    try:
-        cleanup_handler()
-    except:
-        pass
-    print("Cleanup complete")
-
-# Register cleanup handlers
-atexit.register(cleanup_on_exit)
-
+# Single signal handler
 def signal_handler(sig, frame):
     """Handle SIGINT (Ctrl+C) and SIGTERM"""
-    print("\nShutting down gracefully...")
-    cleanup_on_exit()
-    exit(0)
-# Register cleanup
+    print("\nSignal received, cleaning up...")
+    cleanup_handler()
+    # Force exit after cleanup
+    os._exit(0)
+
+# Register cleanup - ONLY ONCE
 atexit.register(cleanup_handler)
-# Register signal handlers
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
@@ -1503,9 +1470,8 @@ if __name__ == '__main__':
         app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
     except KeyboardInterrupt:
         print("\nKeyboard interrupt received...")
-        cleanup_on_exit()
         cleanup_handler()
     finally:
-        cleanup_on_exit()
-        cleanup_handler()
+        # Cleanup already registered with atexit, no need to call again
+        pass
 

@@ -12,6 +12,7 @@ let settings = {};
 let currentSettingsTab = 'core';
 let configDescriptions = {}; // Descriptions from config.env.txt
 let isGenerating = false; // Track if AI is currently generating
+let currentAbortController = null; // Controller to cancel ongoing requests
 
 // Model unload flags (shared with VOX Core)
 window.sttManuallyUnloaded = false;
@@ -268,6 +269,9 @@ async function sendMessage() {
     input.style.height = 'auto';
     input.disabled = true; // Disable input during generation
     
+    // Create new AbortController for this request
+    currentAbortController = new AbortController();
+    
     // Toggle send/stop buttons
     const sendBtn = document.getElementById('send-btn');
     const stopBtn = document.getElementById('stop-inference-btn');
@@ -295,7 +299,8 @@ async function sendMessage() {
                 rag_enabled: document.getElementById('rag-enable')?.checked || false,
                 context_folder: document.getElementById('rag-folder')?.value || '',
                 uploaded_files: uploadedFiles
-            })
+            }),
+            signal: currentAbortController.signal // Add abort signal
         });
         
         const reader = response.body.getReader();
@@ -312,7 +317,7 @@ async function sendMessage() {
                 if (line.startsWith('data: ')) {
                     try {
                         const data = JSON.parse(line.slice(6));
-                        console.log('SSE data received:', data);  // DEBUG
+                        // console.log('SSE data received:', data);  // DEBUG VERY NOISY
                         updateBotMessage(botMsgId, data);
                         
                         if (data.session_id) {
@@ -343,9 +348,16 @@ async function sendMessage() {
         resetButtonsAfterInference();
         
     } catch (error) {
-        console.error('Error sending message:', error);
-        updateBotMessage(botMsgId, { error: 'Failed to get response' });
+        if (error.name === 'AbortError') {
+            console.log('Request was aborted');
+            updateBotMessage(botMsgId, { content: ' [STOPPED]', done: true });
+        } else {
+            console.error('Error sending message:', error);
+            updateBotMessage(botMsgId, { error: 'Failed to get response' });
+        }
         resetButtonsAfterInference();
+    } finally {
+        currentAbortController = null;
     }
 }
 
@@ -472,7 +484,7 @@ function updateBotMessage(id, data) {
                     clearTimeout(scrollTimeout);
                     userScrolling = true;
                     
-                    const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 45;
+                    const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 55;
                     autoScrollEnabled = isNearBottom;
                     
                     scrollTimeout = setTimeout(() => {
@@ -499,7 +511,7 @@ function updateBotMessage(id, data) {
     
     if (data.tool_status || data.tool || data.tool_name || data.tool_args || data.tool_result) {
         const toolMsg = data.tool_status || data.tool || (data.tool_name ? `🔧 ${data.tool_name.replace('potatool_', '').replace(/_/g, ' ')}` : 'Tool executing...');
-        console.log('[Tool]', toolMsg, data);
+        // console.log('[Tool]', toolMsg, data);
         
         // Show tool activity in Thinking & Tools section
         thinkingSection.style.display = 'block';
@@ -512,7 +524,7 @@ function updateBotMessage(id, data) {
         // Update if: same tool name, or if last container still has placeholder
         const shouldUpdate = toolContainer && (
             (data.tool_name && toolContainer.dataset.toolName === data.tool_name) ||
-            toolContainer.querySelector('.tool-detail-line')?.textContent?.includes('Details will appear here')
+            toolContainer.querySelector('.tool-detail-line')?.textContent?.includes('Loading details...')
         );
         
         if (shouldUpdate) {
@@ -572,8 +584,10 @@ function updateBotMessage(id, data) {
         }
         
         if (data.tool_result) {
+            // Format result as JSON
+            const resultStr = typeof data.tool_result === 'string' ? data.tool_result : JSON.stringify(data.tool_result, null, 2);
             detailHTML += `<div class="tool-detail-line"><strong>Result:</strong></div>`;
-            detailHTML += `<pre class="tool-result-pre">${data.tool_result}</pre>`;
+            detailHTML += `<pre class="tool-result-pre">${resultStr}</pre>`;
         }
         
         // Only use placeholder if this is a new container with no details
@@ -630,14 +644,6 @@ function updateBotMessage(id, data) {
                 thinkingContent.scrollTop = thinkingContent.scrollHeight;
             }, 0);
         }
-    }
-    
-    if (data.tool_result) {
-        // Show tool result
-        const resultDiv = document.createElement('div');
-        resultDiv.className = 'tool-info';
-        resultDiv.innerHTML = `<i class="fas fa-check-circle"></i> Result: ${data.tool_result}`;
-        thinkingContent.appendChild(resultDiv);
     }
     
     if (data.content) {
@@ -795,45 +801,73 @@ function appendMessage(text, type, modelName = null) {
 
 async function stopInference() {
     try {
-        // Mark generation as stopped
-        isGenerating = false;
+        console.log('[STOP] Stopping inference...');
         
-        // Save partial response before stopping
-        const chatWindow = document.getElementById('chat-window');
-        const lastBotMsg = chatWindow.querySelector('.msg.bot:last-child');
-        if (lastBotMsg && currentSessionId) {
-            const contentDiv = lastBotMsg.querySelector('.markdown-content');
-            if (contentDiv && contentDiv.textContent.trim()) {
-                // Save current state with [STOPPED] marker
-                const partialContent = contentDiv.textContent + ' [STOPPED]';
-                await fetch('/api/chats/' + currentSessionId + '/save_partial', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        content: partialContent,
-                        model: currentModel 
-                    })
-                });
-            }
+        // Prevent new messages while stopping
+        isGenerating = true; // Keep it true until fully stopped
+        
+        // Abort the fetch stream FIRST
+        if (currentAbortController) {
+            currentAbortController.abort();
+            console.log('[STOP] Aborted fetch stream');
         }
         
+        // Tell backend to stop (this sets stop flag and unloads model)
         await fetch('/api/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ model: currentModel })
         });
+        
+        console.log('[STOP] Backend notified, waiting for cleanup...');
+        
+        // Wait for backend to finish stopping
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        
+        console.log('[STOP] Stop complete');
         appendMessage('Inference stopped', 'system');
+        
     } catch (error) {
         console.error('Error stopping inference:', error);
     } finally {
+        // Now it's safe to allow new messages
+        isGenerating = false;
         resetButtonsAfterInference();
     }
 }
 
 async function unloadChatModel() {
     try {
+        console.log('[UNLOAD] Unloading model...');
+        
+        // If currently generating, abort and stop first
+        if (isGenerating) {
+            console.log('[UNLOAD] Generation active, stopping first...');
+            
+            // Abort fetch
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+            
+            // Call stop endpoint
+            await fetch('/api/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: currentModel })
+            });
+            
+            // Wait for stop to complete
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            isGenerating = false;
+            resetButtonsAfterInference();
+            
+            console.log('[UNLOAD] Generation stopped, now unloading...');
+        }
+        
         document.getElementById('current-model-display').textContent = 'Unloading model...';
         
+        // Now unload the model
         const response = await fetch('/api/unload_model', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -843,8 +877,10 @@ async function unloadChatModel() {
         const result = await response.json();
         
         if (result.success) {
-            appendMessage('Model unloaded from VRAM', 'system');
+            console.log('[UNLOAD] Model unloaded successfully');
+            appendMessage(`Model ${currentModel} unloaded from VRAM`, 'system');
         } else {
+            console.error('[UNLOAD] Error:', result.error);
             appendMessage(`Error unloading: ${result.error}`, 'system');
         }
         
@@ -1021,6 +1057,7 @@ async function loadSession(id) {
                         allToolCalls.forEach((toolCall, idx) => {
                             const toolName = toolCall.function.name;
                             const toolArgs = toolCall.function.arguments;
+                            const toolResult = toolCall.function.result;  // Get saved result
                             const toolId = `tool-${msgId}-${idx}`;
                             
                             // Parse arguments for pretty display (field: value)
@@ -1035,6 +1072,16 @@ async function loadSession(id) {
                                 argsDisplay = `<pre class="tool-args-pre">${typeof toolArgs === 'string' ? toolArgs : JSON.stringify(toolArgs, null, 2)}</pre>`;
                             }
                             
+                            // Format result if exists
+                            let resultDisplay = '';
+                            if (toolResult) {
+                                const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult, null, 2);
+                                resultDisplay = `
+                                    <div class="tool-detail-line"><strong>Result:</strong></div>
+                                    <pre class="tool-result-pre">${resultStr}</pre>
+                                `;
+                            }
+                            
                             thinkingSectionHTML += `
                             <div class="tool-call-container" data-tool-id="${toolId}" style="cursor: pointer;">
                                 <div class="tool-status-line">
@@ -1046,6 +1093,7 @@ async function loadSession(id) {
                                 <div class="tool-detail-section collapsed" id="${toolId}-detail">
                                     <div class="tool-detail-line"><strong>Function:</strong> ${toolName}</div>
                                     ${argsDisplay}
+                                    ${resultDisplay}
                                 </div>
                             </div>`;
                         });

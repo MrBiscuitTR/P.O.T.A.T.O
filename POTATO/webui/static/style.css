@@ -387,6 +387,7 @@ body {
   align-self: flex-start;
   border-color: var(--secondary-color);
   color: var(--text-color);
+  width: -webkit-fill-available;
 }
 
 .msg.system {
@@ -1833,6 +1834,23 @@ html, body {
   margin: 5px 0;
   white-space: pre-wrap;
   word-wrap: break-word;
+}
+
+.thinking-text > a {
+  color: #068ee2;
+}
+
+.thinking-text > a:hover {
+  text-decoration: underline;
+  color: #00f3ff;
+}
+
+.thinking-text > a:visited {
+  color: #728fca;
+}
+
+.thinking-text > a:active {
+  color: #4338ca;
 }
 
 .thinking-content.collapsed {

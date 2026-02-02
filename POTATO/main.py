@@ -488,6 +488,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                         fn = tool.function.name
                         args = tool.function.arguments
                         
+                        # Send tool status
                         yield {'tool': f"MCP: {fn}..."}
                         
                         # Parse args if string
@@ -495,25 +496,32 @@ ALWAYS consider the full conversation history when determining what to search fo
                             try: args = json.loads(args)
                             except: pass
                         
+                        # Send tool name and args for UI display
+                        yield {'tool_name': fn, 'tool_args': args}
+                        
                         # Call MCP
                         try:
                             result = _mcp_client.call_tool(fn, args)
                         except Exception as e:
                             result = {"error": str(e)}
+                        
+                        # Send tool result
+                        yield {'tool_result': result}
 
-                        # Update history for ReAct - keep arguments as dict
+                        # Update history for ReAct - keep arguments as dict AND result
                         tool_dict = {
                             'type': 'function',
                             'function': {
                                 'name': fn,
-                                'arguments': args  # Keep as dict, not JSON string
+                                'arguments': args,  # Keep as dict, not JSON string
+                                'result': result  # Store result for session persistence
                             }
                         }
                         messages.append({'role': 'assistant', 'content': '', 'tool_calls': [tool_dict]})
                         messages.append({'role': 'tool', 'content': json.dumps(result), 'name': fn})
                         
                         # Recursion: Call simple_stream_test() again to handle potential additional tool calls
-                        yield {'tool': "Analyzing..."}
+                        # Don't yield status here - let model decide if more tools needed
                         sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode)
                         
                         # Stream sub-response - this will recursively handle MORE tool calls if present

@@ -20,7 +20,15 @@
   "glm-4.7-flash:Q4_K_M": {
     "can_think": "true",
     "tool_calls": true,
-    "vision": true
+    "vision": true,
+    "thinking_tags": {
+      "open": "<reasoning>",
+      "close": "</reasoning>"
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": true,
+    "detection_notes": "The output uses <reasoning> tags to encapsulate the step-by-step reasoning process.",
+    "detection_date": "2026-02-02T14:45:26.732147"
   },
   "qwen2.5:14b-instruct-q4_K_M": {
     "can_think": "true",
@@ -165,6 +173,11 @@
   "mistral:7b": {
     "can_think": "unknown",
     "tool_calls": false,
-    "vision": "unknown"
+    "vision": "unknown",
+    "thinking_tags": {},
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "No specific thinking or reasoning tags are present in the output.",
+    "detection_date": "2026-02-02T14:59:06.108032"
   }
 }

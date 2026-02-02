@@ -28,7 +28,7 @@ Always use the **Searx Web Search** MCP server for any web-related tasks, includ
 - Searching for up-to-date tutorials, blog posts, or news.
 - Anything that requires real-time or external web information
 
-The current date is 2026. if if your knowledge could be outdated, ALWAYS use web search.
+**If if your knowledge could be outdated, ALWAYS use web search.**
 
 IF you have urls in your context, but not meaningful content, therefore if you are unable to answer user's question using up to date information/documentation, use the potatool_extract_content tool on the urls you have. then generate your answer.
 
