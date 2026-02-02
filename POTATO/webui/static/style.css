@@ -954,10 +954,6 @@ body {
   min-width: 200px;
 }
 
-.voice-language-selector select:hover {
-  background: rgba(0, 255, 0, 0.1);
-}
-
 .voice-language-selector select:focus {
   border-color: #00ff00;
   box-shadow: 0 0 10px rgba(0, 255, 0, 0.3);
@@ -1846,6 +1842,24 @@ html, body {
   background: rgba(0, 255, 157, 0.1);
   border-left: 2px solid var(--secondary-color);
   font-size: 0.85em;
+}
+
+.tool-status-line {
+  padding: 4px 8px;
+  margin: 3px 0;
+  font-size: 0.9em;
+  color: var(--secondary-color);
+  border-left: 2px solid rgba(0, 255, 157, 0.5);
+  background: rgba(0, 255, 157, 0.05);
+  font-family: monospace;
+}
+
+.tool-detail {
+  padding: 2px 8px 2px 20px;
+  margin: 2px 0 5px 0;
+  font-size: 0.75em;
+  color: #888;
+  font-family: monospace;
 }
 
 .tool-url {

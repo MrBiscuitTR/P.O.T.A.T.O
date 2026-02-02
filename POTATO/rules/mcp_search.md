@@ -49,7 +49,7 @@ The MCP server provides two tools:
    - Returns: human-readable text with preserved links (<a href="...">some text</a>) and simplified HTML tables (<table><tr><th><td>...</td></th></tr></table>).  
    - All other HTML is flattened to clean text with appropriate newlines for paragraphs, headings, lists, code blocks, etc.  
    - Perfect for feeding detailed documentation, READMEs, issue threads, or articles to the model.
-   - Dont use on youtube videos or similar non-text content.
+   - Do NOT use on youtube videos or similar non-text content. Dont use on any url that you suspect has only a video or videos on it.
 
 *Do NOT start streaming your final response until all tool calls have been completed.*
 *Do NOT stream tool calls as part of your final response.*

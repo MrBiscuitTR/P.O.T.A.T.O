@@ -144,7 +144,15 @@
   "gpt-oss:20b": {
     "can_think": "unknown",
     "tool_calls": false,
-    "vision": "unknown"
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "<!--",
+      "close": "-->"
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": true,
+    "detection_notes": "The output uses block comments to indicate steps and explanations.",
+    "detection_date": "2026-02-02T01:50:29.214484"
   },
   "mistral:7b": {
     "can_think": "unknown",

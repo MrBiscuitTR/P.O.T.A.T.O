@@ -253,8 +253,11 @@
                 <button class="vox-btn vox-btn-danger" id="vox-stop-speak-btn" onclick="if (typeof VOX !== 'undefined') VOX.stopSpeaking()">
                   <i class="fas fa-volume-mute"></i> Stop Speaking
                 </button>
-                <button class="vox-btn vox-btn-warning" onclick="unloadWhisperModel()">
-                  <i class="fas fa-brain"></i> Unload STT
+                <button class="vox-btn vox-btn-warning" onclick="unloadSTT()" id="unload-stt-btn">
+                  <i class="fas fa-ear-listen"></i> Unload STT
+                </button>
+                <button class="vox-btn vox-btn-warning" onclick="unloadTTS()" id="unload-tts-btn">
+                  <i class="fas fa-volume-high"></i> Unload TTS
                 </button>
                 <button class="vox-btn vox-btn-secondary" onclick="if (typeof VOX !== 'undefined') VOX.clearChat()">
                   <i class="fas fa-trash"></i> Clear Chat

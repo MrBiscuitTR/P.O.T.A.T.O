@@ -13,6 +13,10 @@ let currentSettingsTab = 'core';
 let configDescriptions = {}; // Descriptions from config.env.txt
 let isGenerating = false; // Track if AI is currently generating
 
+// Model unload flags (shared with VOX Core)
+window.sttManuallyUnloaded = false;
+window.ttsManuallyUnloaded = false;
+
 // Load config descriptions on page load
 async function loadConfigDescriptions() {
     try {
@@ -216,6 +220,21 @@ function switchTab(tabId) {
     const buttons = document.querySelectorAll('.nav-btn');
     if (btnMap[tabId] !== undefined && buttons[btnMap[tabId]]) {
         buttons[btnMap[tabId]].classList.add('active');
+    }
+    
+    // Reset model unload flags when entering VOX Core tab
+    if (tabId === 'vox-core') {
+        console.log('[VOX] Entering VOX Core tab, resetting unload flags');
+        window.sttManuallyUnloaded = false;
+        window.ttsManuallyUnloaded = false;
+        
+        // Preload TTS if not loaded (symbiotic with STT for VOX Core)
+        if (typeof VOX !== 'undefined' && typeof VOX.loadTTSModels === 'function') {
+            const language = document.getElementById('vox-language')?.value || 'en';
+            VOX.loadTTSModels(language).catch(err => {
+                console.log('[VOX] TTS preload skipped:', err);
+            });
+        }
     }
     
     // VOX Core now uses new VOX module (vox.js) - no auto-start needed
@@ -436,8 +455,8 @@ function updateBotMessage(id, data) {
                 clearTimeout(scrollTimeout);
                 userScrolling = true;
                 
-                // Check if near bottom (within 50px)
-                const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 50;
+                // Check if near bottom (within 20px)
+                const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 20;
                 autoScrollEnabled = isNearBottom;
                 
                 // Re-enable auto-scroll after user stops scrolling
@@ -463,11 +482,34 @@ function updateBotMessage(id, data) {
         }
     }
     
-    if (data.tool_status) {
-        // Tool status is backend info - do NOT display to user
-        // Tools should be handled by the backend silently
-        console.log('[Tool]', data.tool_status);
-        // Removed display logic - tools are not user-facing
+    if (data.tool_status || data.tool) {
+        const toolMsg = data.tool_status || data.tool;
+        console.log('[Tool]', toolMsg);
+        
+        // Show tool activity in Thinking & Tools section
+        thinkingSection.style.display = 'block';
+        
+        // Create tool status line
+        const toolDiv = document.createElement('div');
+        toolDiv.className = 'tool-status-line';
+        toolDiv.textContent = toolMsg;
+        thinkingContent.appendChild(toolDiv);
+        
+        // If tool has detailed info, add it
+        if (data.tool_name) {
+            const detailDiv = document.createElement('div');
+            detailDiv.className = 'tool-detail';
+            detailDiv.textContent = `  Function: ${data.tool_name}`;
+            if (data.tool_args) {
+                detailDiv.textContent += ` | Args: ${JSON.stringify(data.tool_args).substring(0, 50)}...`;
+            }
+            thinkingContent.appendChild(detailDiv);
+        }
+        
+        // Auto-scroll thinking section
+        setTimeout(() => {
+            thinkingContent.scrollTop = thinkingContent.scrollHeight;
+        }, 0);
     }
     
     if (data.tool_result) {
@@ -1083,6 +1125,72 @@ async function preloadWhisper() {
         }
     } catch (error) {
         console.error('Error preloading Whisper:', error);
+    }
+}
+
+// Track if models are unloaded
+let sttManuallyUnloaded = false;
+let ttsManuallyUnloaded = false;
+
+async function unloadSTT() {
+    try {
+        const response = await fetch('/api/stt_unload', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            sttManuallyUnloaded = true;
+            window.sttManuallyUnloaded = true;  // Expose globally for VOX
+            whisperPreloaded = false;
+            window.whisperPreloaded = false;
+            window.whisperModelLoaded = false;
+            console.log('[STT] Whisper model unloaded');
+            
+            const btn = document.getElementById('unload-stt-btn');
+            if (btn) {
+                btn.innerHTML = '<i class="fas fa-check"></i> STT Unloaded';
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="fas fa-ear-listen"></i> Unload STT';
+                }, 2000);
+            }
+        }
+    } catch (error) {
+        console.error('[STT] Error unloading Whisper:', error);
+        alert('Error unloading STT: ' + error.message);
+    }
+}
+
+async function unloadTTS() {
+    try {
+        const response = await fetch('/api/tts_unload', { method: 'POST' });
+        const data = await response.json();
+        
+        if (data.success) {
+            ttsManuallyUnloaded = true;
+            window.ttsManuallyUnloaded = true;  // Expose globally
+            console.log('[TTS] TTS model unloaded');
+            
+            const btn = document.getElementById('unload-tts-btn');
+            if (btn) {
+                btn.innerHTML = '<i class="fas fa-check"></i> TTS Unloaded';
+                setTimeout(() => {
+                    btn.innerHTML = '<i class="fas fa-volume-high"></i> Unload TTS';
+                }, 2000);
+            }
+        }
+    } catch (error) {
+        console.error('[TTS] Error unloading TTS:', error);
+        alert('Error unloading TTS: ' + error.message);
+    }
+}
+
+// Auto-reload STT when recording starts
+function reloadSTTIfNeeded() {
+    if (sttManuallyUnloaded) {
+        console.log('[STT] Model was manually unloaded, will reload on next transcription');
+        sttManuallyUnloaded = false;
+        whisperPreloaded = false;
+        window.whisperPreloaded = false;
+        window.whisperModelLoaded = false;
     }
 }
 

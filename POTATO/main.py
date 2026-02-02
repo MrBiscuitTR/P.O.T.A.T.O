@@ -383,24 +383,32 @@ ALWAYS consider the full conversation history when determining what to search fo
                     # Look for all occurrences of {"name": "potatool_
                     json_objects = []
                     search_pos = 0
+                    
+                    # First, clean up common model mistakes:
+                    # - Remove trailing ] after JSON object: {"name":...}]
+                    # - Remove markdown-style formatting
+                    text_cleaned = text
+                    # Remove trailing ] that some models add
+                    text_cleaned = re.sub(r'(\{[^}]+\})\]\s*$', r'\1', text_cleaned)
+                    
                     while True:
                         # Find next potential JSON object start
-                        start_pos = text.find('{"name"', search_pos)
+                        start_pos = text_cleaned.find('{"name"', search_pos)
                         if start_pos == -1:
-                            start_pos = text.find("{\"name\"", search_pos)
+                            start_pos = text_cleaned.find('{\"name\"', search_pos)
                         if start_pos == -1:
                             break
                         
                         # Check if it's a potatool_ call
-                        if 'potatool_' not in text[start_pos:start_pos+100]:
+                        if 'potatool_' not in text_cleaned[start_pos:start_pos+100]:
                             search_pos = start_pos + 1
                             continue
                         
                         # Try to parse JSON from this position with increasing lengths
                         found_valid_json = False
-                        for end_offset in range(50, min(len(text) - start_pos, 2000), 50):
+                        for end_offset in range(50, min(len(text_cleaned) - start_pos, 2000), 50):
                             try:
-                                candidate = text[start_pos:start_pos+end_offset]
+                                candidate = text_cleaned[start_pos:start_pos+end_offset]
                                 # Find the last complete } 
                                 last_brace = candidate.rfind('}')
                                 if last_brace == -1:
@@ -554,12 +562,17 @@ ALWAYS consider the full conversation history when determining what to search fo
                                 fn = tool['function']['name']
                                 args = tool['function']['arguments']
                                 
-                                yield {'tool': f"🔍 {fn}({args})"}
+                                # Yield detailed tool info for frontend (Thinking & Tools section)
+                                tool_display_name = fn.replace('potatool_', '').replace('_', ' ').title()
+                                yield {'tool': f"🔧 Calling {tool_display_name}...", 'tool_name': fn, 'tool_args': args}
                                 print(f"[MCP] Calling {fn} with args: {args}")
                                 
                                 try:
                                     result = _mcp_client.call_tool(fn, args)
                                     print(f"[MCP] Result: {str(result)[:300]}")
+                                    
+                                    # Yield success message
+                                    yield {'tool': f"✓ {tool_display_name} completed", 'tool_result': str(result)[:100]}
                                     
                                     # Check if tool failed
                                     if isinstance(result, dict) and 'error' in result:
@@ -621,12 +634,49 @@ ALWAYS consider the full conversation history when determining what to search fo
                                               '[' in accumulated_text[-10:] or \
                                               '`' in accumulated_text[-10:]
                         
+                        # Check if this might be the start of a tool call
+                        # More aggressive: if we see 'potatool_' anywhere, hold the buffer
+                        might_be_tool_call = 'potatool_' in accumulated_text or \
+                                            ('"name"' in accumulated_text and '"arguments"' in accumulated_text)
+                        
                         if is_done:
-                            # Stream ended, yield everything
-                            final_content += accumulated_text
-                            yield {'content': accumulated_text}
-                            accumulated_text = ""
-                        elif len(accumulated_text) > 100 and not potential_tool_start:
+                            # Stream ended, check one last time for tool calls before yielding
+                            if might_be_tool_call:
+                                detected_tools = parse_text_tool_calls(accumulated_text)
+                                if detected_tools:
+                                    print(f"[TOOL EXECUTION] Found tool call at stream end: {detected_tools}")
+                                    # Execute tools (same logic as above)
+                                    for tool in detected_tools:
+                                        fn = tool['function']['name']
+                                        args = tool['function']['arguments']
+                                        tool_display_name = fn.replace('potatool_', '').replace('_', ' ').title()
+                                        yield {'tool': f"🔧 Calling {tool_display_name}...", 'tool_name': fn, 'tool_args': args}
+                                        print(f"[MCP] Calling {fn} with args: {args}")
+                                        try:
+                                            result = _mcp_client.call_tool(fn, args)
+                                            yield {'tool': f"✓ {tool_display_name} completed", 'tool_result': str(result)[:100]}
+                                            if isinstance(result, dict) and 'error' in result:
+                                                continue
+                                        except Exception as e:
+                                            result = {"error": str(e)}
+                                            continue
+                                        messages.append({'role': 'assistant', 'content': '', 'tool_calls': [tool]})
+                                        messages.append({'role': 'tool', 'content': json.dumps(result), 'name': fn})
+                                    if messages and messages[-1].get('role') == 'tool':
+                                        yield {'tool': "📊 Analyzing results..."}
+                                        sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode)
+                                        for sub in sub_stream:
+                                            if 'content' in sub:
+                                                final_content += sub['content']
+                                            yield sub
+                                        return
+                                    accumulated_text = ""
+                            # No tool call found, yield as normal content
+                            if accumulated_text:
+                                final_content += accumulated_text
+                                yield {'content': accumulated_text}
+                                accumulated_text = ""
+                        elif len(accumulated_text) > 100 and not potential_tool_start and not might_be_tool_call:
                             # Buffer getting large and no tool call starting - yield it
                             final_content += accumulated_text
                             yield {'content': accumulated_text}

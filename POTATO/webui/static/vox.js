@@ -229,6 +229,21 @@ async function setAudioDevice(deviceIndex, deviceName) {
 async function startVOXRecording() {
     console.log('[VOX] startVOXRecording called, voxIsListening:', voxIsListening);
     
+    // Reload STT if it was manually unloaded
+    if (window.sttManuallyUnloaded) {
+        console.log('[VOX] STT was unloaded, resetting flags for reload');
+        window.sttManuallyUnloaded = false;
+        window.whisperModelLoaded = false;
+    }
+    
+    // Reload TTS if it was manually unloaded (symbiotic with STT)
+    if (window.ttsManuallyUnloaded) {
+        console.log('[VOX] TTS was unloaded, reloading...');
+        window.ttsManuallyUnloaded = false;
+        const language = document.getElementById('vox-language')?.value || 'en';
+        await loadTTSModels(language);
+    }
+    
     if (voxIsListening) {
         console.log('[VOX] Already listening, stopping instead');
         stopVOXRecording();
@@ -624,7 +639,21 @@ async function transcribeAndRespond(audioBlob) {
 async function speakText(text, language = 'en') {
     if (!text) return;
     
+    // Reload TTS if it was manually unloaded
+    if (window.ttsManuallyUnloaded) {
+        console.log('[VOX] TTS was unloaded, reloading...');
+        window.ttsManuallyUnloaded = false;
+        await loadTTSModels(language);
+    }
+    
     voxIsSpeaking = true;
+    
+    // CRITICAL: Pause recording while speaking to prevent echo/feedback
+    const wasRecording = voxIsListening;
+    if (wasRecording && voxMediaRecorder && voxMediaRecorder.state === 'recording') {
+        console.log('[VOX] Pausing recording during TTS to prevent echo');
+        voxMediaRecorder.pause();
+    }
     
     try {
         await fetch('/api/vox_speak', {
@@ -635,10 +664,19 @@ async function speakText(text, language = 'en') {
                 language: language
             })
         });
+        
+        // Wait a bit for TTS to finish (add small delay for audio to complete)
+        await new Promise(resolve => setTimeout(resolve, 500));
     } catch (error) {
         console.error('Error speaking:', error);
     } finally {
         voxIsSpeaking = false;
+        
+        // Resume recording after TTS finishes
+        if (wasRecording && voxMediaRecorder && voxMediaRecorder.state === 'paused') {
+            console.log('[VOX] Resuming recording after TTS');
+            voxMediaRecorder.resume();
+        }
     }
 }
 
@@ -925,7 +963,8 @@ if (typeof window.VOX === 'undefined') {
         stopSpeaking: stopVOXSpeaking,
         clearChat: clearVOXChat,
         setLanguage: (lang) => { voxLanguage = lang; },
-        setAudioDevice: setAudioDevice
+        setAudioDevice: setAudioDevice,
+        loadTTSModels: loadTTSModels  // Expose for tab switching preload
     };
     console.log('VOX module loaded and exported to window.VOX');
 } else {
