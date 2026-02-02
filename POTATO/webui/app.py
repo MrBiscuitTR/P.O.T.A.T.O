@@ -1172,10 +1172,10 @@ def tts_unload():
 def stt_unload():
     """Unload STT model from VRAM"""
     try:
-        from POTATO.components.vocal_tools.audioflow import unload_whisper
-        unload_whisper()
+        unload_whisper_model()
         return jsonify({"success": True})
     except Exception as e:
+        print(f"Error in stt_unload endpoint: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/vox_core', methods=['POST'])
@@ -1431,15 +1431,65 @@ def cleanup_handler():
     """Ensure models are unloaded on exit"""
     print("\n[CLEANUP] Shutting down gracefully...")
     try:
+        # Stop TTS
         stop_tts()
         unload_tts_models()
+        
+        # Unload Whisper
         unload_whisper_model()
-        unload_model()
+        
+        # Unload VOX models
         unload_vox()
+        
+        # Stop any ongoing inference
         stop_inference()
         
-    except:
-        pass
+        # Stop ALL running Ollama models by parsing ollama ps output
+        print("[CLEANUP] Checking for running Ollama models...")
+        try:
+            result = subprocess.run(
+                ['ollama', 'ps'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                lines = result.stdout.strip().split('\n')
+                # Skip header line and parse model names
+                if len(lines) > 1:
+                    print(f"[CLEANUP] Found running models:")
+                    for line in lines[1:]:
+                        if line.strip():
+                            # Parse model name (first column)
+                            parts = line.split()
+                            if parts:
+                                model_name = parts[0]
+                                print(f"[CLEANUP] Stopping model: {model_name}")
+                                try:
+                                    subprocess.run(['ollama', 'stop', model_name], timeout=5)
+                                    print(f"[CLEANUP] Stopped: {model_name}")
+                                except Exception as e:
+                                    print(f"[CLEANUP] Error stopping {model_name}: {e}")
+                    
+                    # Verify all models stopped
+                    verify = subprocess.run(['ollama', 'ps'], capture_output=True, text=True, timeout=5)
+                    if verify.stdout.strip() and len(verify.stdout.strip().split('\n')) > 1:
+                        print("[CLEANUP] Warning: Some models may still be running")
+                    else:
+                        print("[CLEANUP] All Ollama models stopped successfully")
+                else:
+                    print("[CLEANUP] No Ollama models running")
+            else:
+                print("[CLEANUP] No Ollama models running")
+                
+        except Exception as e:
+            print(f"[CLEANUP] Error during Ollama cleanup: {e}")
+        
+    except Exception as e:
+        print(f"[CLEANUP] Error during cleanup: {e}")
+    
+    print("[CLEANUP] Cleanup complete")
     sys.exit(0)
 
 

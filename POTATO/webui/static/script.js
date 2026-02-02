@@ -224,15 +224,14 @@ function switchTab(tabId) {
     
     // Reset model unload flags when entering VOX Core tab
     if (tabId === 'vox-core') {
-        console.log('[VOX] Entering VOX Core tab, resetting unload flags');
+        console.log('[VOX] Entering VOX Core tab, initializing models...');
         window.sttManuallyUnloaded = false;
         window.ttsManuallyUnloaded = false;
         
-        // Preload TTS if not loaded (symbiotic with STT for VOX Core)
-        if (typeof VOX !== 'undefined' && typeof VOX.loadTTSModels === 'function') {
-            const language = document.getElementById('vox-language')?.value || 'en';
-            VOX.loadTTSModels(language).catch(err => {
-                console.log('[VOX] TTS preload skipped:', err);
+        // Initialize VOX (loads STT+TTS) when entering VOX Core tab
+        if (typeof VOX !== 'undefined' && typeof VOX.init === 'function') {
+            VOX.init().catch(err => {
+                console.error('[VOX] Initialization failed:', err);
             });
         }
     }
@@ -439,41 +438,57 @@ function updateBotMessage(id, data) {
         // Show thinking section
         thinkingSection.style.display = 'block';
         
-        // Accumulate thinking in a single element instead of creating many <p> tags
-        let thinkingText = thinkingContent.querySelector('.thinking-text');
-        if (!thinkingText) {
+        // Get or create current thinking chunk
+        // After a tool call, we need a NEW thinking chunk to maintain chronological order
+        let thinkingText = thinkingContent._currentThinkingChunk;
+        
+        // If no current chunk OR last inserted was a tool, create new chunk
+        const lastInserted = thinkingContent._lastInsertPoint;
+        const needNewChunk = !thinkingText || (lastInserted && lastInserted.classList && lastInserted.classList.contains('tool-call-container'));
+        
+        if (needNewChunk) {
             thinkingText = document.createElement('div');
             thinkingText.className = 'thinking-text';
-            thinkingContent.appendChild(thinkingText);
             
-            // Add auto-scroll behavior
-            let autoScrollEnabled = true;
-            let userScrolling = false;
-            let scrollTimeout;
+            // Insert after last insertion point (maintains chronological order)
+            if (lastInserted && lastInserted.nextSibling) {
+                thinkingContent.insertBefore(thinkingText, lastInserted.nextSibling);
+            } else {
+                thinkingContent.appendChild(thinkingText);
+            }
             
-            thinkingContent.addEventListener('scroll', () => {
-                clearTimeout(scrollTimeout);
-                userScrolling = true;
+            // Update tracking
+            thinkingContent._currentThinkingChunk = thinkingText;
+            thinkingContent._lastInsertPoint = thinkingText;
+            
+            // Add auto-scroll behavior (only once)
+            if (!thinkingContent._scrollSetup) {
+                thinkingContent._scrollSetup = true;
+                let autoScrollEnabled = true;
+                let userScrolling = false;
+                let scrollTimeout;
                 
-                // Check if near bottom (within 20px)
-                const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 20;
-                autoScrollEnabled = isNearBottom;
+                thinkingContent.addEventListener('scroll', () => {
+                    clearTimeout(scrollTimeout);
+                    userScrolling = true;
+                    
+                    const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 45;
+                    autoScrollEnabled = isNearBottom;
+                    
+                    scrollTimeout = setTimeout(() => {
+                        userScrolling = false;
+                    }, 150);
+                });
                 
-                // Re-enable auto-scroll after user stops scrolling
-                scrollTimeout = setTimeout(() => {
-                    userScrolling = false;
-                }, 150);
-            });
-            
-            // Store scroll state on element
-            thinkingContent._autoScroll = true;
+                thinkingContent._autoScroll = true;
+            }
         }
         
         thinkingText.textContent += data.thinking;
         
         // Auto-scroll if enabled and not collapsed
         if (!thinkingContent.classList.contains('collapsed')) {
-            const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 50;
+            const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 20;
             if (thinkingContent._autoScroll !== false && isNearBottom) {
                 setTimeout(() => {
                     thinkingContent.scrollTop = thinkingContent.scrollHeight;
@@ -489,27 +504,104 @@ function updateBotMessage(id, data) {
         // Show tool activity in Thinking & Tools section
         thinkingSection.style.display = 'block';
         
-        // Create tool status line
+        // Create expandable tool status container
+        const toolContainer = document.createElement('div');
+        toolContainer.className = 'tool-call-container';
+        
+        // Create tool status line (clickable header)
         const toolDiv = document.createElement('div');
         toolDiv.className = 'tool-status-line';
-        toolDiv.textContent = toolMsg;
-        thinkingContent.appendChild(toolDiv);
+        const toolId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
-        // If tool has detailed info, add it
+        // Add chevron and message
+        toolDiv.innerHTML = `
+            <span class="tool-toggle" id="${toolId}-toggle">
+                <i class="fas fa-chevron-right"></i>
+            </span>
+            <span class="tool-message">${toolMsg}</span>
+        `;
+        
+        // Create detail section (collapsed by default)
+        const detailDiv = document.createElement('div');
+        detailDiv.className = 'tool-detail-section collapsed';
+        detailDiv.id = `${toolId}-detail`;
+        
+        // Add full details if available
+        let detailHTML = '';
+        
         if (data.tool_name) {
-            const detailDiv = document.createElement('div');
-            detailDiv.className = 'tool-detail';
-            detailDiv.textContent = `  Function: ${data.tool_name}`;
-            if (data.tool_args) {
-                detailDiv.textContent += ` | Args: ${JSON.stringify(data.tool_args).substring(0, 50)}...`;
-            }
-            thinkingContent.appendChild(detailDiv);
+            detailHTML += `<div class="tool-detail-line"><strong>Function:</strong> ${data.tool_name}</div>`;
         }
         
-        // Auto-scroll thinking section
-        setTimeout(() => {
-            thinkingContent.scrollTop = thinkingContent.scrollHeight;
-        }, 0);
+        if (data.tool_args) {
+            const argsStr = typeof data.tool_args === 'string' 
+                ? data.tool_args 
+                : JSON.stringify(data.tool_args, null, 2);
+            detailHTML += `<div class="tool-detail-line"><strong>Parameters:</strong></div>`;
+            detailHTML += `<pre class="tool-args-pre">${argsStr}</pre>`;
+        }
+        
+        if (data.tool_result) {
+            detailHTML += `<div class="tool-detail-line"><strong>Result:</strong></div>`;
+            detailHTML += `<pre class="tool-result-pre">${data.tool_result}</pre>`;
+        }
+        
+        // If no details yet, show placeholder
+        if (!detailHTML) {
+            detailHTML = `<div class="tool-detail-line" style="color: #888; font-style: italic;">Details will appear here...</div>`;
+        }
+        
+        detailDiv.innerHTML = detailHTML;
+        
+        // Assemble container - always add detail div
+        toolContainer.appendChild(toolDiv);
+        toolContainer.appendChild(detailDiv);
+        
+        // Make entire container clickable to toggle details
+        toolContainer.style.cursor = 'pointer';
+        toolContainer.onclick = (e) => {
+            console.log('[Tool Click] Container clicked, toolId:', toolId);
+            
+            const details = document.getElementById(`${toolId}-detail`);
+            const toggle = document.getElementById(`${toolId}-toggle`);
+            
+            console.log('[Tool Click] Found elements:', { details: !!details, toggle: !!toggle });
+            
+            if (details && toggle) {
+                if (details.classList.contains('collapsed')) {
+                    console.log('[Tool Click] Expanding...');
+                    details.classList.remove('collapsed');
+                    toggle.innerHTML = '<i class="fas fa-chevron-down"></i>';
+                } else {
+                    console.log('[Tool Click] Collapsing...');
+                    details.classList.add('collapsed');
+                    toggle.innerHTML = '<i class="fas fa-chevron-right"></i>';
+                }
+            } else {
+                console.error('[Tool Click] Missing elements!', { detailsId: `${toolId}-detail`, toggleId: `${toolId}-toggle` });
+            }
+        };
+        
+        // CRITICAL: Maintain chronological order - insert after last insertion point
+        const lastPoint = thinkingContent._lastInsertPoint || thinkingContent.lastChild;
+        if (lastPoint && lastPoint.nextSibling) {
+            thinkingContent.insertBefore(toolContainer, lastPoint.nextSibling);
+        } else {
+            thinkingContent.appendChild(toolContainer);
+        }
+        
+        // Update last insertion point to this tool container
+        thinkingContent._lastInsertPoint = toolContainer;
+        // Clear current thinking chunk so next thinking creates a new one
+        thinkingContent._currentThinkingChunk = null;
+        
+        // Only auto-scroll if user hasn't manually scrolled up
+        const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 20;
+        if (isNearBottom) {
+            setTimeout(() => {
+                thinkingContent.scrollTop = thinkingContent.scrollHeight;
+            }, 0);
+        }
     }
     
     if (data.tool_result) {
@@ -521,6 +613,18 @@ function updateBotMessage(id, data) {
     }
     
     if (data.content) {
+        // Filter out HTML-formatted reasoning that should be hidden
+        // Detect patterns like: <ol start="403"><li>Let's try...</li></ol>
+        const isHTMLReasoning = /^<ol[^>]*>.*?<li>.*?(Let's|We need|We should|We must|We can|We have|Better to|Actually|Wait|Looking at)/i.test(data.content);
+        
+        if (isHTMLReasoning) {
+            // This is reasoning disguised as content - move to thinking instead
+            console.log('[FILTER] Detected HTML reasoning in content, moving to thinking');
+            // Optionally add to thinking section if needed, or just skip it
+            // For now, we'll just not render it as content
+            return;
+        }
+        
         // Auto-collapse thinking section when real content starts
         if (contentDiv.textContent === 'Thinking...') {
             contentDiv.innerHTML = '';
@@ -856,22 +960,72 @@ async function loadSession(id) {
                     // Use model from message JSON, NOT currentModel
                     const displayModel = msg.model || 'Unknown Model';
                     
-                    // Check if there's thinking/tools metadata
+                    // Build thinking section with actual thinking text and tool calls from history
                     const hasThinking = msg._thinking && msg._thinking.trim();
-                    const hasTools = msg._tools && msg._tools.trim();
-                    const thinkingToolsContent = (hasThinking ? msg._thinking : '') + (hasTools ? msg._tools : '');
+                    const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
                     
-                    msgDiv.innerHTML = `
-                        <div class="model-badge">${displayModel}</div>
-                        ${thinkingToolsContent ? `
+                    let thinkingSectionHTML = '';
+                    if (hasThinking || hasToolCalls) {
+                        thinkingSectionHTML = `
                         <div class="thinking-section" id="${msgId}-thinking-section" style="display: block;">
                           <div class="thinking-header" onclick="toggleThinking('${msgId}')">
                             <span><i class="fas fa-brain"></i> Thinking & Tools</span>
                             <span class="thinking-toggle collapsed" id="${msgId}-thinking-toggle"><i class="fas fa-chevron-down"></i></span>
                           </div>
-                          <div class="thinking-content collapsed" id="${msgId}-thinking-content">${thinkingToolsContent}</div>
-                        </div>
-                        ` : ''}
+                          <div class="thinking-content collapsed" id="${msgId}-thinking-content">`;
+                        
+                        // Add thinking text if exists
+                        if (hasThinking) {
+                            thinkingSectionHTML += `<div class="thinking-text">${msg._thinking}</div>`;
+                        }
+                        
+                        // Add tool calls with full parameters
+                        if (hasToolCalls) {
+                            msg.tool_calls.forEach(toolCall => {
+                                const toolName = toolCall.function.name;
+                                const toolArgs = toolCall.function.arguments;
+                                const toolId = `tool-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+                                
+                                const argsStr = typeof toolArgs === 'string' 
+                                    ? toolArgs 
+                                    : JSON.stringify(toolArgs, null, 2);
+                                
+                                thinkingSectionHTML += `
+                                <div class="tool-call-container" style="cursor: pointer;" onclick="(function(e) {
+                                    e.stopPropagation();
+                                    const details = document.getElementById('${toolId}-detail');
+                                    const toggle = document.getElementById('${toolId}-toggle');
+                                    if (details && toggle) {
+                                        if (details.classList.contains('collapsed')) {
+                                            details.classList.remove('collapsed');
+                                            toggle.innerHTML = '<i class=\"fas fa-chevron-down\"></i>';
+                                        } else {
+                                            details.classList.add('collapsed');
+                                            toggle.innerHTML = '<i class=\"fas fa-chevron-right\"></i>';
+                                        }
+                                    }
+                                })(event)">
+                                    <div class="tool-status-line">
+                                        <span class="tool-toggle" id="${toolId}-toggle">
+                                            <i class="fas fa-chevron-right"></i>
+                                        </span>
+                                        <span class="tool-message">🔧 ${toolName.replace('potatool_', '').replace(/_/g, ' ')}</span>
+                                    </div>
+                                    <div class="tool-detail-section collapsed" id="${toolId}-detail">
+                                        <div class="tool-detail-line"><strong>Function:</strong> ${toolName}</div>
+                                        <div class="tool-detail-line"><strong>Parameters:</strong></div>
+                                        <pre class="tool-args-pre">${argsStr}</pre>
+                                    </div>
+                                </div>`;
+                            });
+                        }
+                        
+                        thinkingSectionHTML += `</div></div>`;
+                    }
+                    
+                    msgDiv.innerHTML = `
+                        <div class="model-badge">${displayModel}</div>
+                        ${thinkingSectionHTML}
                         <div class="markdown-content" id="${msgId}-content"></div>
                     `;
                     

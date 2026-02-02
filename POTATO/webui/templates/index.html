@@ -438,12 +438,9 @@
     <script src="{{ url_for('static', filename='script.js') }}"></script>
     <script src="{{ url_for('static', filename='vox.js') }}"></script>
     <script>
-      // Initialize VOX when page loads
-      document.addEventListener('DOMContentLoaded', () => {
-        if (typeof VOX !== 'undefined') {
-          VOX.init();
-        }
-      });
+      // VOX models will load only when VOX Core tab is opened
+      // No auto-load on page load to save VRAM
+      console.log('Page loaded - VOX models will load on demand');
     </script>
   </body>
 </html>

@@ -1845,13 +1845,94 @@ html, body {
 }
 
 .tool-status-line {
-  padding: 4px 8px;
+  padding: 4px 10px;
   margin: 3px 0;
   font-size: 0.9em;
   color: var(--secondary-color);
-  border-left: 2px solid rgba(0, 255, 157, 0.5);
-  background: rgba(0, 255, 157, 0.05);
+  border-left: 3px solid rgba(0, 255, 157, 0.6);
+  background: rgba(0, 255, 157, 0.08);
   font-family: monospace;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 3px;
+  transition: background 0.2s ease;
+  min-height: 24px;
+  line-height: 1.2;
+}
+
+.tool-status-line:hover {
+  background: rgba(0, 255, 157, 0.12);
+}
+
+.tool-call-container {
+  margin: 5px 0;
+}
+
+.tool-toggle {
+  width: 12px;
+  height: 12px;
+  color: var(--secondary-color);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-toggle svg,
+.tool-toggle i {
+  width: 12px;
+  height: 12px;
+}
+
+.tool-message {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+
+.tool-detail-section {
+  margin-left: 24px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border-left: 2px solid rgba(0, 255, 157, 0.3);
+  border-radius: 0 0 3px 3px;
+  font-size: 0.85em;
+  max-height: 500px;
+  overflow-y: auto;
+  transition: max-height 0.3s ease, opacity 0.3s ease;
+}
+
+.tool-detail-section.collapsed {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  padding: 0 12px;
+}
+
+.tool-detail-line {
+  margin: 5px 0;
+  color: #aaa;
+}
+
+.tool-detail-line strong {
+  color: var(--secondary-color);
+  margin-right: 5px;
+}
+
+.tool-args-pre,
+.tool-result-pre {
+  background: rgba(0, 0, 0, 0.4);
+  padding: 8px;
+  margin: 5px 0;
+  border-radius: 3px;
+  font-size: 0.9em;
+  color: #ccc;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid rgba(0, 255, 157, 0.2);
 }
 
 .tool-detail {

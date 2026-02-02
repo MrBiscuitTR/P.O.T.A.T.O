@@ -48,7 +48,15 @@
   "devstral-small-2:24b": {
     "can_think": "unknown",
     "tool_calls": false,
-    "vision": "unknown"
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "<think>",
+      "close": "</think>"
+    },
+    "has_inline_thinking": true,
+    "supports_streaming_thinking": true,
+    "detection_notes": "The output includes reasoning steps within the text, wrapped in <think> tags.",
+    "detection_date": "2026-02-02T02:23:20.125022"
   },
   "codestral:22b": {
     "can_think": "unknown",
