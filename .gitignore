@@ -198,3 +198,4 @@ POTATO/docker/searx/vpn/nl-free-146.protonvpn.tcp.ovpn
 /POTATO/.data/usersettings.json
 /POTATO/webui_v001
 /POTATO/components/vocal_tools/samples
+/POTATO/.data/preferences.json
