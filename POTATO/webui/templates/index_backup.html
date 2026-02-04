@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>P.O.T.A.T.O // Interface</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+  </head>
+  <body>
+    <div class="scanline"></div>
+    <div class="overlay"></div>
+
+    <div class="app-container">
+      <aside class="sidebar" id="left-sidebar">
+        <div class="brand">
+          <h1>P.O.T.A.T.O</h1>
+          <span class="status-indicator online">ONLINE</span>
+        </div>
+
+        <div class="nav-menu">
+          <button class="nav-btn active" onclick="switchTab('chat')"><i class="fa-solid fa-message"></i> COMM_LINK</button>
+          <button class="nav-btn" onclick="switchTab('browser')"><i class="fa-solid fa-globe"></i> NET_RUNNER</button>
+          <button class="nav-btn" onclick="switchTab('settings')"><i class="fa-solid fa-sliders"></i> CONFIG</button>
+          <button class="nav-btn critical" onclick="toggleVoice()"><i class="fa-solid fa-microphone-lines"></i> VOX_CORE</button>
+        </div>
+
+        <div class="stats-panel">
+          <h3>SYSTEM_METRICS</h3>
+          <div class="stat-row"><span>CPU</span><div class="bar-container"><div class="bar" id="cpu-bar" style="width: 0%"></div></div><span id="cpu-val">0%</span></div>
+          <div class="stat-row"><span>RAM</span><div class="bar-container"><div class="bar" id="ram-bar" style="width: 0%"></div></div><span id="ram-val">0%</span></div>
+          <div class="stat-row"><span>GPU</span><div class="bar-container"><div class="bar" id="gpu-bar" style="width: 0%"></div></div><span id="gpu-val">0%</span></div>
+          <div class="stat-row"><span>VRAM</span><div class="bar-container"><div class="bar" id="vram-bar" style="width: 0%"></div></div><span id="vram-val">0%</span></div>
+          <div class="stat-row"><span>GPU TEMP</span><span id="temp-val" class="temp-display">0°C</span></div>
+        </div>
+      </aside>
+
+      <main class="main-display">
+        
+        <section id="chat-view" class="view-section active">
+          <div class="chat-container-fixed">
+            <div class="rag-sidebar-container" id="rag-panel">
+                </div>
+
+            <div class="chat-layout">
+              <div class="chat-history-sidebar">
+                <div class="search-box"><input type="text" placeholder="SEARCH_LOGS..." /></div>
+                <ul class="chat-list"></ul>
+              </div>
+              
+              <div class="chat-interface">
+                <div class="chat-window" id="chat-window">
+                  <div class="msg system">Initialization Complete. Systems Nominal.</div>
+                </div>
+
+                <div class="input-area-container">
+                    <div class="input-widgets">
+                        <label class="widget-icon" title="Upload File">
+                            <i class="fa-solid fa-paperclip"></i>
+                            <input type="file" hidden onchange="uploadFile(this)">
+                        </label>
+                        <label class="widget-icon" title="Upload Folder">
+                            <i class="fa-solid fa-folder"></i>
+                            <input type="file" hidden webkitdirectory onchange="uploadFolder(this)">
+                        </label>
+                        <div class="widget-icon" id="mic-btn" onmousedown="startRecording()" onmouseup="stopRecording()">
+                            <i class="fa-solid fa-microphone"></i>
+                        </div>
+                        <div class="widget-icon right-toggle" onclick="toggleRightSidebar()" title="Toggle RAG">
+                            <i class="fa-solid fa-database"></i>
+                        </div>
+                    </div>
+                    <div class="input-area">
+                        <textarea id="chat-input" placeholder="Execute Command..." rows="1"></textarea>
+                        <button id="send-btn" onclick="sendMessage()"><i class="fa-solid fa-paper-plane"></i></button>
+                    </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="browser-view" class="view-section">
+          <div class="browser-header">
+            <div class="url-bar">http://localhost:8080/searx</div>
+            <div class="browser-controls"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          </div>
+          <div class="browser-placeholder">
+            <i class="fa-solid fa-network-wired"></i>
+            <p>PLAYWRIGHT REMOTE VIEW LINKED</p>
+            <p class="sub-text">Waiting for visual feed...</p>
+          </div>
+        </section>
+
+        <section id="settings-view" class="view-section">
+          <h2>SYSTEM_CONFIGURATION</h2>
+          <div id="settings-container" class="settings-grid"></div>
+          <button class="save-btn" onclick="saveSettings()">COMMIT_CHANGES</button>
+        </section>
+      </main>
+
+      <aside class="sidebar right-sidebar collapsed" id="right-sidebar">
+        <div class="sidebar-header">
+            <h3>RAG_MODULE</h3>
+            <button onclick="toggleRightSidebar()" class="close-btn"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="rag-content">
+            <div class="control-group">
+                <label>ENABLED</label>
+                <input type="checkbox" id="rag-toggle">
+            </div>
+            <div class="control-group">
+                <label>CONTEXT_FOLDER</label>
+                <input type="text" id="rag-folder" placeholder="/data/context">
+            </div>
+            <div class="control-group">
+                <label>EMBEDDING_MODEL</label>
+                <select><option>nomic-embed-text</option><option>mxbai-embed-large</option></select>
+            </div>
+            <button class="action-btn" onclick="triggerEmbed()">EMBED_DATA</button>
+            <div id="rag-status" class="status-log">Status: Idle</div>
+        </div>
+      </aside>
+    </div>
+
+    <div id="voice-overlay" class="voice-overlay hidden">
+      <div class="voice-container">
+        <h2>LISTENING...</h2>
+        <div class="visualizer"><div class="wave"></div><div class="wave"></div><div class="wave"></div><div class="wave"></div><div class="wave"></div></div>
+        <button class="close-voice" onclick="toggleVoice()">TERMINATE_VOX</button>
+      </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+  </body>
+</html>

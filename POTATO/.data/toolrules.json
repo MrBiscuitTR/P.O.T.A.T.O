@@ -1,0 +1,8 @@
+{
+  "mcp_search.md": {
+    "tools": ["potatool_web_search_urls", "potatool_extract_content"],
+    "requires_web_search": true,
+    "requires_stealth_mode": false,
+    "description": "Web search and content extraction via MCP SearXNG server"
+  }
+}
