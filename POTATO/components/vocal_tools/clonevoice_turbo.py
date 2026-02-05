@@ -134,30 +134,54 @@ producer_thread = None
 playback_thread = None
 current_stream = None
 
+# Global flag to track if TTS is currently speaking (for VOX interrupt detection)
+_is_speaking = False
+
 def generate_worker(text_groups, audio_q):
     """Generate TTS audio chunks and put them in queue"""
     try:
         model = _get_model()  # Get model instance
         for sentence in text_groups:
+            # Check stop flags before processing each sentence
             if stop_event.is_set() or shutdown_event.is_set():
+                print("[TTS] Generation stopped by flag")
                 break
 
-            ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device=="cuda" else torch.no_grad()
-            with ctx:
-                wav = model.generate(
-                    text=sentence,
-                    audio_prompt_path=str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None,
-                    exaggeration=0.8, 
-                    cfg_weight=0.5
-                )
+            try:
+                ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device=="cuda" else torch.no_grad()
+                with ctx:
+                    wav = model.generate(
+                        text=sentence,
+                        audio_prompt_path=str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None,
+                        exaggeration=0.8, 
+                        cfg_weight=0.5
+                    )
 
-            wav = wav.squeeze()
-            if wav.abs().max() > 1:
-                wav = wav / wav.abs().max()
+                wav = wav.squeeze()
+                if wav.abs().max() > 1:
+                    wav = wav / wav.abs().max()
 
-            audio_q.put((sentence, wav.cpu().float().numpy()))
+                # Use timeout to prevent blocking if queue is being cleared
+                try:
+                    audio_q.put((sentence, wav.cpu().float().numpy()), timeout=0.5)
+                except queue.Full:
+                    print("[TTS] Queue full, skipping chunk")
+                    break
+            except Exception as e:
+                print(f"[TTS] Error generating sentence: {e}")
+                # Continue to next sentence instead of crashing
+                continue
+                
+    except Exception as e:
+        print(f"[TTS] Fatal error in generate_worker: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        audio_q.put(None)
+        # Signal end of generation
+        try:
+            audio_q.put(None, timeout=0.5)
+        except:
+            pass
 
 def playback_worker(audio_q, sample_rate):
     """Continuously play audio chunks from queue without gaps"""
@@ -165,27 +189,53 @@ def playback_worker(audio_q, sample_rate):
     try:
         while not shutdown_event.is_set():
             if stop_event.is_set():
-                # Clear queue when stopped
+                # Stop current audio
+                try:
+                    sd.stop()
+                except:
+                    pass
+                
+                # Clear queue completely
+                cleared_count = 0
                 while not audio_q.empty():
                     try:
                         audio_q.get_nowait()
-                    except:
+                        cleared_count += 1
+                    except queue.Empty:
                         break
-                stop_event.clear()
+                
+                if cleared_count > 0:
+                    print(f"[TTS] Cleared {cleared_count} queued chunks")
+                
+                # DON'T clear stop_event here - let stop_current_tts() handle it
+                # Wait a moment before checking again
+                time.sleep(0.1)
                 continue
             
-            item = audio_q.get()
+            # Get next audio with timeout to allow checking stop_event
+            try:
+                item = audio_q.get(timeout=0.5)
+            except queue.Empty:
+                # No audio available, check flags and continue
+                continue
+            
+            # None signals end of generation
             if item is None:
                 break
+            
+            # Check stop again before playing
+            if stop_event.is_set():
+                continue
             
             sentence, wav_np = item
             print(f"→ {sentence}")
             
-            if stop_event.is_set():
-                continue
-            
-            # Play audio and wait for completion
-            sd.play(wav_np, samplerate=sample_rate, blocking=True)
+            try:
+                # Play audio and wait for completion
+                sd.play(wav_np, samplerate=sample_rate, blocking=True)
+            except Exception as e:
+                print(f"[TTS] Playback error: {e}")
+                # Continue to next chunk instead of crashing
             
     except Exception as e:
         print(f"Playback error: {e}")
@@ -194,60 +244,105 @@ def playback_worker(audio_q, sample_rate):
 
 def speak_sentences_grouped(text: str):
     """Stream TTS in chunks with seamless playback queue. Safe for very long text."""
-    global producer_thread, playback_thread
+    global producer_thread, playback_thread, _is_speaking
     
-    # Don't clear stop_event here - let it be managed by stop_current_tts()
-    # Clear audio queue
-    while not audio_q.empty():
-        try:
-            audio_q.get_nowait()
-        except:
-            break
+    try:
+        # Set speaking flag
+        _is_speaking = True
+        
+        # Clear stop event if it's set from a previous stop
+        if stop_event.is_set():
+            stop_event.clear()
+        
+        # Clear audio queue before starting new generation
+        while not audio_q.empty():
+            try:
+                audio_q.get_nowait()
+            except queue.Empty:
+                break
 
-    groups = split_sentences(text)
-    model = _get_model()  # Get model instance for sample rate
+        groups = split_sentences(text)
+        model = _get_model()  # Get model instance for sample rate
 
-    # Start producer thread
-    producer_thread = threading.Thread(
-        target=generate_worker,
-        args=(groups, audio_q),
-        daemon=True
-    )
-    producer_thread.start()
-
-    # Start playback thread if not running
-    if playback_thread is None or not playback_thread.is_alive():
-        playback_thread = threading.Thread(
-            target=playback_worker,
-            args=(audio_q, int(model.sr)),
+        # Start producer thread for this generation
+        producer_thread = threading.Thread(
+            target=generate_worker,
+            args=(groups, audio_q),
             daemon=True
         )
-        playback_thread.start()
-    
-    # Wait for producer to finish
-    producer_thread.join()
+        producer_thread.start()
+
+        # Start playback thread if not running (single persistent thread)
+        if playback_thread is None or not playback_thread.is_alive():
+            playback_thread = threading.Thread(
+                target=playback_worker,
+                args=(audio_q, int(model.sr)),
+                daemon=True
+            )
+            playback_thread.start()
+        
+        # Wait for producer to finish generating audio
+        producer_thread.join(timeout=300)  # 5 minute timeout
+        
+    except Exception as e:
+        print(f"[TTS] Error in speak_sentences_grouped: {e}")
+        import traceback
+        traceback.print_exc()
+        # Don't crash - let the error be handled gracefully
+    finally:
+        # Clear speaking flag when done (even if error)
+        _is_speaking = False
 # =========================
 # Control functions
 # =========================
 
 def stop_current_tts():
-    """Stop the current generation & playback, keep model loaded. Does NOT terminate app."""
-    stop_event.set()
-    sd.stop()
+    """Stop the current generation & playback immediately, keep model loaded. Crash-proof."""
+    global producer_thread, current_stream, _is_speaking
     
-    # Clear audio queue
-    while not audio_q.empty():
+    try:
+        # Clear speaking flag
+        _is_speaking = False
+        
+        # Set stop flag FIRST
+        stop_event.set()
+        
+        # Stop audio playback immediately
         try:
-            audio_q.get_nowait()
-        except:
-            break
-    
-    # Don't join threads - let them handle stop_event gracefully
-    print("→ Current TTS stopped, model still loaded.")
-    
-    # Reset stop event after a brief moment
-    time.sleep(0.1)
-    stop_event.clear()
+            sd.stop()
+        except Exception as e:
+            print(f"[TTS] Error stopping audio: {e}")
+        
+        # Clear audio queue completely
+        cleared_count = 0
+        while not audio_q.empty():
+            try:
+                audio_q.get_nowait()
+                cleared_count += 1
+            except queue.Empty:
+                break
+        
+        if cleared_count > 0:
+            print(f"→ Stopped TTS and cleared {cleared_count} queued chunks")
+        else:
+            print("→ TTS stopped")
+        
+        # Wait briefly for threads to notice stop flag
+        time.sleep(0.2)
+        
+        # Clear stop event so playback can resume on next speak call
+        stop_event.clear()
+        
+    except Exception as e:
+        print(f"[TTS] Error in stop_current_tts (non-fatal): {e}")
+        import traceback
+        traceback.print_exc()
+        # Clear the flag anyway
+        stop_event.clear()
+
+def is_speaking():
+    """Check if TTS is currently speaking (for VOX interrupt detection)"""
+    return _is_speaking
 
 def shutdown_tts():
     """Stop everything and unload the model to free VRAM. Safe, won't crash app."""
