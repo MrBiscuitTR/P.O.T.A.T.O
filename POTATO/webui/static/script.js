@@ -34,7 +34,9 @@ window.ttsManuallyUnloaded = false;
 async function loadConfigDescriptions() {
     try {
         const response = await fetch('/api/settings/descriptions');
-        configDescriptions = await response.json();
+        configDescriptions = await response.json().catch(error => {
+            console.error('Error parsing config descriptions:', error);
+        });
     } catch (error) {
         console.error('Error loading config descriptions:', error);
     }
@@ -46,11 +48,11 @@ let autoScrollEnabled = true;  // Auto-scroll by default
 // Configure marked.js for markdown rendering
 if (typeof marked !== 'undefined') {
     marked.setOptions({
-        highlight: function(code, lang) {
-            if (lang && hljs.getLanguage(lang)) {
-                return hljs.highlight(code, { language: lang }).value;
-            }
-            return hljs.highlightAuto(code).value;
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    return hljs.highlight(code, { language: lang }).value;
+                }
+                return hljs.highlightAuto(code).value;
         },
         breaks: true,
         gfm: true
@@ -182,7 +184,9 @@ async function savePreferences() {
 async function loadModels() {
     try {
         const response = await fetch('/api/models');
-        const data = await response.json();
+        const data = await response.json().catch(error => {
+            console.error('Error loading models:', error);
+        });
         
         const selector = document.getElementById('model-selector');
         selector.innerHTML = '';
@@ -349,7 +353,7 @@ function updateUploadedImagesDisplay() {
 
 function handlePaste(e) {
     const items = e.clipboardData?.items;
-    if (!items) return;
+    if (!items || items.length === 0) return;
     
     const files = [];
     for (let i = 0; i < items.length; i++) {
@@ -1002,7 +1006,19 @@ function waitForUploadsComplete() {
 // --- CHAT FUNCTIONS ---
 async function sendMessage() {
     const input = document.getElementById('chat-input');
-    const message = input.value.trim();
+        const message = input.value.trim(); 
+        if (!message || isGenerating) return;
+        // Check for uploads in progress
+        if (hasUploadsInProgress()) {
+            // Show indicator that we're waiting for uploads
+            const sendBtn = document.getElementById('send-btn');
+            sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            sendBtn.disabled = true;
+            await waitForUploadsComplete();
+            // Restore button
+            sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+            sendBtn.disabled = false;
+        }
     
     if (!message || isGenerating) return;
     
@@ -1538,24 +1554,145 @@ function renderMarkdown(element, text) {
         function normalizeLatex(src) {
             if (!src || typeof src !== 'string') return src;
             let s = src;
-            // Wrap \begin{...}...\end{...} in $$...$$ if not already delimited
-            s = s.replace(/\\begin\{[\s\S]*?\\end\{[\s\S]*?\}/g, (m) => {
-                // if already inside $$ or $ skip
-                if (/\$\$/.test(m) || /\$/.test(m)) return m;
-                return '$$' + m + '$$';
+
+            // STEP 1: Protect existing LaTeX delimiters from markdown parser
+            // Store them in a map that we'll return
+            const protectedBlocks = [];
+            let blockIndex = 0;
+
+            // Protect $$...$$ display math blocks first (before single $)
+            s = s.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                protectedBlocks[blockIndex] = match;
+                blockIndex++;
+                return placeholder;
             });
-            // Convert parenthesized fragments that contain LaTeX commands (e.g. \to, \forall)
-            // into inline math $...$ so auto-render picks them up.
-            s = s.replace(/\(([^)]*\\[a-zA-Z]+[^)]*)\)/g, (m, inner) => {
-                // skip if inner already contains dollar or explicit delimiters
-                if (/^\$.*\$$/.test(inner) || /^\\\(.+\\\)$/.test(inner) || /^\\\[.+\\\]$/.test(inner)) return '(' + inner + ')';
-                return '$' + inner + '$';
+
+            // Protect \[...\] display math blocks
+            s = s.replace(/\\\[([\s\S]*?)\\\]/g, (match) => {
+                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                protectedBlocks[blockIndex] = match;
+                blockIndex++;
+                return placeholder;
             });
-            return s;
+
+            // Protect inline math $...$ (but be more careful - only if it looks like math)
+            s = s.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
+                // Only protect if it contains LaTeX commands or math symbols
+                if (/\\[a-zA-Z]+|[\^_{}]|\\[()[\]]/.test(inner)) {
+                    const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                    protectedBlocks[blockIndex] = match;
+                    blockIndex++;
+                    return placeholder;
+                }
+                return match;
+            });
+
+            // Protect \(...\) inline math blocks
+            s = s.replace(/\\\(([\s\S]*?)\\\)/g, (match) => {
+                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                protectedBlocks[blockIndex] = match;
+                blockIndex++;
+                return placeholder;
+            });
+
+            // STEP 2: Convert fenced code blocks labeled as math/latex into display math
+            s = s.replace(/```(?:math|latex)\n([\s\S]*?)\n```/g, (m, inner) => {
+                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                protectedBlocks[blockIndex] = '\n\n$$\n' + inner.trim() + '\n$$\n\n';
+                blockIndex++;
+                return placeholder;
+            });
+
+            // STEP 3: Wrap \begin{...}...\end{...} in $$...$$ if not already delimited
+            s = s.replace(/\\begin\{[\s\S]*?\\end\{[^}]+\}/g, (m) => {
+                // Check if already protected or delimited
+                if (m.includes('___LATEX_BLOCK_') || /\$\$/.test(m)) return m;
+                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                protectedBlocks[blockIndex] = '$$' + m + '$$';
+                blockIndex++;
+                return placeholder;
+            });
+
+            // Return both the normalized text and the protected blocks
+            return { text: s, protectedBlocks };
         }
 
-        const normalized = normalizeLatex(text);
-        element.innerHTML = marked.parse(normalized);
+        const { text: normalized, protectedBlocks } = normalizeLatex(text);
+        let html = marked.parse(normalized);
+
+        // Restore protected LaTeX blocks after markdown parsing
+        if (protectedBlocks && protectedBlocks.length > 0) {
+            protectedBlocks.forEach((block, index) => {
+                const placeholder = `___LATEX_BLOCK_${index}___`;
+                // Replace in HTML, accounting for possible HTML encoding
+                html = html.split(placeholder).join(block);
+                html = html.split(`LATEX_BLOCK_${index}`).join(block);
+            });
+        }
+
+        element.innerHTML = html;
+
+        // Post-process: some models emit math inside code blocks. KaTeX auto-render
+        // ignores code/pre tags. If a code block contains only math, unwrap it so
+        // renderMathInElement can process it. This keeps code blocks that are code intact.
+        (function unwrapMathCodeBlocks(root) {
+            try {
+                const pres = root.querySelectorAll('pre');
+                pres.forEach(pre => {
+                    const code = pre.querySelector('code');
+                    if (!code) return;
+                    const txt = code.textContent.trim();
+
+                    // Enhanced heuristics: detect LaTeX more accurately
+                    const hasLatexEnv = /\\begin\{[a-zA-Z*]+\}/.test(txt) || /\\end\{[a-zA-Z*]+\}/.test(txt);
+                    const hasLatexDelim = txt.includes('$$') || txt.includes('\\[') || txt.includes('\\]') ||
+                                         txt.includes('\\(') || txt.includes('\\)');
+                    const hasLatexCommands = /\\(?:frac|sqrt|sum|int|prod|lim|infty|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|omega|nabla|partial|cdot|times|div|pm|leq|geq|neq|approx|equiv|sin|cos|tan|log|ln|exp|matrix|begin|end|text|mathbb|mathcal|boldsymbol|vec|hat|bar|tilde|dot|left|right|big|Big|[a-zA-Z]+)\{?/.test(txt);
+                    const wrappedInMathDelim = /^\$\$[\s\S]+\$\$$/.test(txt) || /^\\\[[\s\S]+\\\]$/.test(txt) ||
+                                               /^\$[^\$]+\$$/.test(txt) || /^\\\([\s\S]+\\\)$/.test(txt);
+
+                    const looksLikeMath = hasLatexEnv || hasLatexDelim || hasLatexCommands || wrappedInMathDelim;
+
+                    // Additional check: if it contains typical code patterns, don't unwrap
+                    const looksLikeCode = /^(function|class|const|let|var|def|import|export|return|if|else|for|while)\s/.test(txt) ||
+                                         /[;{}()]\s*$/.test(txt) ||
+                                         txt.split('\n').length > 3 && /^[\s]+(function|const|let|var|if|for|while|def|class)/.test(txt);
+
+                    if (looksLikeMath && !looksLikeCode) {
+                        // Replace the <pre> with a div that contains the raw math text so KaTeX can find it
+                        const container = document.createElement('div');
+                        container.className = 'math-block-unwrapped';
+                        // Preserve spacing/newlines
+                        container.textContent = txt;
+                        pre.parentElement.replaceChild(container, pre);
+                    }
+                });
+
+                // Also check inline code spans that contain math delimiters and unwrap
+                const codes = root.querySelectorAll('code');
+                codes.forEach(code => {
+                    // Skip code inside pre (already handled)
+                    if (code.parentElement && code.parentElement.tagName.toLowerCase() === 'pre') return;
+                    const txt = code.textContent.trim();
+
+                    // Unwrap if it's clearly math delimited
+                    const isMathDelimited = (txt.startsWith('$$') && txt.endsWith('$$')) ||
+                                           (txt.startsWith('\\[') && txt.endsWith('\\]')) ||
+                                           (txt.startsWith('\\(') && txt.endsWith('\\)')) ||
+                                           (txt.startsWith('$') && txt.endsWith('$') && /\\[a-zA-Z]+/.test(txt));
+
+                    if (isMathDelimited) {
+                        const span = document.createElement('span');
+                        span.className = 'math-inline-unwrapped';
+                        span.textContent = txt;
+                        code.parentElement.replaceChild(span, code);
+                    }
+                });
+            } catch (e) {
+                console.warn('unwrapMathCodeBlocks error', e);
+            }
+        })(element);
         
         // Add copy buttons to code blocks
         element.querySelectorAll('pre code').forEach((block) => {
@@ -1595,19 +1732,26 @@ function renderLatex(element) {
     
     try {
         renderMathInElement(element, {
+            // Process longer delimiters FIRST to avoid greedy matching issues
             delimiters: [
-                {left: '$$', right: '$$', display: true},   // Block math
-                {left: '$', right: '$', display: false},     // Inline math
+                {left: '$$', right: '$$', display: true},    // Block math (must come before single $)
                 {left: '\\[', right: '\\]', display: true},  // Block math alt
-                {left: '\\(', right: '\\)', display: false}  // Inline math alt
+                {left: '\\(', right: '\\)', display: false}, // Inline math alt
+                {left: '$', right: '$', display: false}      // Inline math (last to avoid conflicts)
             ],
             throwOnError: false,
             errorColor: '#ff6b6b',
             strict: false,
             trust: true,
-            // Don't process inside code blocks
-            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
-            ignoredClasses: ['no-latex']
+            fleqn: false,
+            // Don't process inside code blocks (but our unwrapMathCodeBlocks handles math in code)
+            ignoredTags: ['script', 'noscript', 'style', 'textarea'],
+            ignoredClasses: ['no-latex'],
+            // Preprocess to handle edge cases
+            preProcess: (text) => {
+                // Remove any HTML entities that might break delimiters
+                return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+            }
         });
     } catch (e) {
         console.warn('LaTeX rendering error:', e);

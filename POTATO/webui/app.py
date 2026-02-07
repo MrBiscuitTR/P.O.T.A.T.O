@@ -50,8 +50,28 @@ _model_info_cache = None
 _model_info_cache_time = 0
 
 # --- TOOL REGISTRY ---
+def potatool_rag_fetch(query, session_id=None, top_k=5):
+    """Tool: fetch relevant RAG snippets from vector DB for a session/query.
+    Returns a list of dicts: {source, content, score}
+    """
+    try:
+        results = query_weaviate(query, chat_id=session_id, limit=top_k)
+        # Normalize results
+        normalized = []
+        for r in (results or []):
+            normalized.append({
+                'source': r.get('source_file') or r.get('source') or 'unknown',
+                'content': r.get('content')[:2000] if r.get('content') else '',
+                'score': r.get('score', None)
+            })
+        return {'success': True, 'results': normalized}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+
+
 TOOL_REGISTRY = {
     "get_current_weather": lambda location: f"The weather in {location} is 22°C and Sunny.",
+    "potatool_rag_fetch": potatool_rag_fetch,
 }
 
 app = Flask(__name__)
@@ -2066,6 +2086,10 @@ def chat_stream():
         existing = load_chat_session(session_id)
         history = existing['messages'] if existing else []
     
+    # Collect extra system messages (file lists, RAG context, OCR summaries)
+    # These will be inserted as `system` messages in the history (not shown to user)
+    extra_system_messages = []
+
     # Build file context info for LLM so it knows what files are available
     file_info_context = ""
     if file_context and file_context.get('total_count', 0) > 0:
@@ -2082,6 +2106,8 @@ def chat_stream():
         
         if file_info_parts:
             file_info_context = "\n\n=== Available Files ===\nThe user has uploaded the following files that you can reference:\n" + "\n".join(file_info_parts) + "\n\nWhen the user refers to a specific file, use the content from that file.\n"
+            # Do not inline file list into the user's visible message; add as system context
+            extra_system_messages.append(file_info_context)
     
     # Handle uploaded files - add content to message
     # ALSO handle reload scenario: file_context has filenames but uploaded_files is empty
@@ -2109,7 +2135,8 @@ def chat_stream():
         
         if file_contents:
             files_context = "\n\n=== Uploaded Files Content ===\n" + "\n\n".join(file_contents)
-            user_input = files_context + "\n\n" + user_input
+            # Add uploaded file content as system context (keeps chat UI clean)
+            extra_system_messages.append(files_context)
     elif file_context and file_context.get('files'):
         # Reload scenario: we have file_context but no uploaded_files content
         # Try to load from uploads folder
@@ -2153,7 +2180,7 @@ def chat_stream():
         
         if file_contents:
             files_context = "\n\n=== Uploaded Files Content (Reloaded) ===\n" + "\n\n".join(file_contents)
-            user_input = files_context + "\n\n" + user_input
+            extra_system_messages.append(files_context)
     
     # Handle RAG context - use vector search if enabled
     if rag_enabled:
@@ -2173,8 +2200,9 @@ def chat_stream():
                     content_type = result.get('content_type', 'text')
                     content = result['content']
                     rag_context += f"\n[{i+1}] Source: {source} ({content_type})\n{content}\n"
-                user_input = rag_context + "\n\n=== User Query ===\n" + user_input
-                print(f"[RAG] Added {len(rag_results)} context chunks from vector DB")
+                # Add RAG context as a system message instead of inlining into user's visible message
+                extra_system_messages.append(rag_context)
+                print(f"[RAG] Added {len(rag_results)} context chunks from vector DB (as system message)")
         
         # Fallback to folder reading if rag_folder specified and no vector results
         if rag_folder and (not rag_results if 'rag_results' in locals() else True):
@@ -2183,8 +2211,8 @@ def chat_stream():
                 rag_context = "\n\n=== RAG Context (From Folder) ===\n"
                 for item in folder_contents:
                     rag_context += f"\nFile: {item['file']}\n{item['content'][:1000]}...\n"
-                user_input = rag_context + "\n\n=== User Query ===\n" + user_input
-                print(f"[RAG] Added {len(folder_contents)} files from folder")
+                extra_system_messages.append(rag_context)
+                print(f"[RAG] Added {len(folder_contents)} files from folder (as system message)")
     
     # Handle uploaded images for vision models
     # Images are either:
@@ -2299,10 +2327,10 @@ def chat_stream():
             if len(image_base64_list) >= MAX_IMAGES:
                 break
         
-        # Add OCR content to user input if any PDFs were batch-processed
+        # Add OCR content as system context if any PDFs were batch-processed
         if ocr_content_parts:
             ocr_context = "\n\n".join(ocr_content_parts)
-            user_input = ocr_context + "\n\n=== User Question ===\n" + user_input
+            extra_system_messages.append(ocr_context)
         
         if image_base64_list:
             # Build descriptive context for attached files
@@ -2325,8 +2353,9 @@ def chat_stream():
             else:
                 context_prompt = f"[Attached: {', '.join(attachment_descriptions)}]\n\n"
             
-            user_input = context_prompt + user_input
-            print(f"[SEND] VL model: {len(image_base64_list)} images + {len(ocr_content_parts)} OCR docs")
+            # Add descriptions as system context for the model
+            extra_system_messages.append(context_prompt)
+            print(f"[SEND] VL model: {len(image_base64_list)} images + {len(ocr_content_parts)} OCR docs (context added as system message)")
     elif uploaded_images and not current_model_is_vl:
         # Non-VL model - need to describe images with fallback VL model and add as text
         print(f"[SEND] Non-VL model: describing {len(uploaded_images)} images with fallback VL model")
@@ -2378,9 +2407,7 @@ def chat_stream():
             user_input = f"[The following images were described for you since you cannot see images directly]\n\n{image_context}\n\n=== User Question ===\n{user_input}"
             print(f"[SEND] Added {len(image_descriptions)} image descriptions to context")
     
-    # Prepend file info context if we have files
-    if file_info_context:
-        user_input = file_info_context + user_input
+    # File info already added to extra_system_messages earlier; nothing to inline here
     
     # Build user message with attachment metadata for chat history
     user_message = {"role": "user", "content": user_input}
@@ -2389,6 +2416,12 @@ def chat_stream():
     if attachments_meta and (attachments_meta.get('images') or attachments_meta.get('files')):
         user_message['_attachments'] = attachments_meta
     
+    # Insert system context messages into history BEFORE the user message so they are
+    # available to the model but not shown as user-visible bubbles in the chat UI
+    if extra_system_messages:
+        for sys_msg in extra_system_messages:
+            history.append({"role": "system", "content": sys_msg})
+
     # Add user message to history
     history.append(user_message)
     
@@ -2399,7 +2432,8 @@ def chat_stream():
         placeholder_title = user_input[:27] + "..." if len(user_input) > 27 else user_input
         save_chat_session(session_id, history, title=placeholder_title)
         print(f"[CHAT] New session created immediately: {session_id}")
-    
+
+
     def generate():
         try:
             # Send session_id immediately so frontend can update chat list
@@ -2590,6 +2624,26 @@ def chat_stream():
             yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
     
     return Response(stream_with_context(generate()), mimetype='text/event-stream')
+
+
+@app.route('/api/rag_fetch', methods=['POST'])
+def api_rag_fetch():
+    """HTTP endpoint wrapper around the potatool_rag_fetch tool.
+    Expects JSON: { session_id, query, top_k }
+    """
+    data = request.json or {}
+    session_id = data.get('session_id')
+    query = data.get('query', '')
+    try:
+        top_k = int(data.get('top_k', 5))
+    except:
+        top_k = 5
+
+    if not query:
+        return jsonify({'success': False, 'error': 'Missing query'}), 400
+
+    res = potatool_rag_fetch(query, session_id=session_id, top_k=top_k)
+    return jsonify(res)
 
 @app.route('/api/tts_is_speaking', methods=['GET'])
 def tts_is_speaking():

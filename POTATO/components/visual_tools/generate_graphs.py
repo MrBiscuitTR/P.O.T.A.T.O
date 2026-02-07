@@ -40,7 +40,7 @@ def draw_any_graph_type(
     title: str = "Graph",
     x_label: str = "X-axis",
     y_label: str = "Y-axis",
-    output_dir: str = "graphs_output",
+    output_dir: str = ".temp/graphs_output",
     output_name: str = "graph.png"
 ):
     try:

@@ -1,5 +1,5 @@
 {
-    "selected_model": "devstral-small-2:24b",
+    "selected_model": "gpt-oss:20b",
     "vox_language": "en",
     "audio_device_index": "1",
     "audio_device_name": "Microphone Array (Intel\u00ae Smart",

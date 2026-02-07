@@ -1981,6 +1981,7 @@ body {
   
   #left-sidebar.mobile-open {
     transform: translateX(0);
+    padding-top: 50px;
   }
   
   /* Hide chat history on mobile */
@@ -2443,6 +2444,7 @@ body {
   
   .chat-history-sidebar.mobile-open {
     transform: translateX(0);
+    padding-top: 53px;
   }
   
   /* Overlay for chat history sidebar */
@@ -2465,7 +2467,7 @@ body {
   .chat-header {
     padding: 10px;
     gap: 8px;
-    padding-top: 30px;
+    padding-top: 50px;
   }
   
   #current-model-display {
@@ -2595,6 +2597,8 @@ body {
 @media (max-width: 480px) {
   .brand h1 {
     font-size: 1.2rem;
+    margin: 0;
+    line-height: 0.9;
   }
   
   .status-indicator {
@@ -2602,8 +2606,8 @@ body {
   }
   
   .hamburger {
-    padding: 6px 10px;
-    font-size: 1rem;
+    padding: 8px 12px;
+    font-size: 1.2rem;
   }
   
   .input-widgets {
@@ -2852,6 +2856,18 @@ html, body {
 .katex-error {
   color: var(--accent-color) !important;
   font-size: 0.9em;
+}
+
+/* Unwrapped math blocks (converted from code blocks) */
+.math-block-unwrapped,
+.math-inline-unwrapped {
+  display: inline-block;
+  white-space: pre-wrap;
+}
+
+.math-block-unwrapped {
+  display: block;
+  margin: 0.5em 0;
 }
 
 /* Unload buttons */
