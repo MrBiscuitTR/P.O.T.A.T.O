@@ -1562,7 +1562,7 @@ function renderMarkdown(element, text) {
 
             // Protect $$...$$ display math blocks first (before single $)
             s = s.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
-                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
                 protectedBlocks[blockIndex] = match;
                 blockIndex++;
                 return placeholder;
@@ -1570,7 +1570,7 @@ function renderMarkdown(element, text) {
 
             // Protect \[...\] display math blocks
             s = s.replace(/\\\[([\s\S]*?)\\\]/g, (match) => {
-                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
                 protectedBlocks[blockIndex] = match;
                 blockIndex++;
                 return placeholder;
@@ -1580,7 +1580,7 @@ function renderMarkdown(element, text) {
             s = s.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
                 // Only protect if it contains LaTeX commands or math symbols
                 if (/\\[a-zA-Z]+|[\^_{}]|\\[()[\]]/.test(inner)) {
-                    const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                    const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
                     protectedBlocks[blockIndex] = match;
                     blockIndex++;
                     return placeholder;
@@ -1590,7 +1590,7 @@ function renderMarkdown(element, text) {
 
             // Protect \(...\) inline math blocks
             s = s.replace(/\\\(([\s\S]*?)\\\)/g, (match) => {
-                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
                 protectedBlocks[blockIndex] = match;
                 blockIndex++;
                 return placeholder;
@@ -1598,7 +1598,7 @@ function renderMarkdown(element, text) {
 
             // STEP 2: Convert fenced code blocks labeled as math/latex into display math
             s = s.replace(/```(?:math|latex)\n([\s\S]*?)\n```/g, (m, inner) => {
-                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
                 protectedBlocks[blockIndex] = '\n\n$$\n' + inner.trim() + '\n$$\n\n';
                 blockIndex++;
                 return placeholder;
@@ -1607,8 +1607,8 @@ function renderMarkdown(element, text) {
             // STEP 3: Wrap \begin{...}...\end{...} in $$...$$ if not already delimited
             s = s.replace(/\\begin\{[\s\S]*?\\end\{[^}]+\}/g, (m) => {
                 // Check if already protected or delimited
-                if (m.includes('___LATEX_BLOCK_') || /\$\$/.test(m)) return m;
-                const placeholder = `___LATEX_BLOCK_${blockIndex}___`;
+                if (m.includes('data-latex-block') || /\$\$/.test(m)) return m;
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
                 protectedBlocks[blockIndex] = '$$' + m + '$$';
                 blockIndex++;
                 return placeholder;
@@ -1624,10 +1624,8 @@ function renderMarkdown(element, text) {
         // Restore protected LaTeX blocks after markdown parsing
         if (protectedBlocks && protectedBlocks.length > 0) {
             protectedBlocks.forEach((block, index) => {
-                const placeholder = `___LATEX_BLOCK_${index}___`;
-                // Replace in HTML, accounting for possible HTML encoding
-                html = html.split(placeholder).join(block);
-                html = html.split(`LATEX_BLOCK_${index}`).join(block);
+                const spanPlaceholder = `<span data-latex-block="${index}"></span>`;
+                html = html.split(spanPlaceholder).join(block);
             });
         }
 

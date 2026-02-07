@@ -3,7 +3,7 @@ import requests
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup, NavigableString, Tag
-
+from POTATO.components.visual_tools.extract_text import fast_extract_pdf_text
 SEARX_URL = "http://localhost:8080/search"  # Change to your SearXNG instance URL, probably the same. you can also use a public instance but be aware of privacy implications.
 MAX_RESULTS = 5
 
