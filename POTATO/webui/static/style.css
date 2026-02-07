@@ -1981,7 +1981,7 @@ body {
   
   #left-sidebar.mobile-open {
     transform: translateX(0);
-    padding-top: 50px;
+    padding-top: 65px;
   }
   
   /* Hide chat history on mobile */
@@ -2391,6 +2391,8 @@ body {
   
   .app-container {
     flex-direction: column;
+    padding-top: 50px;
+    padding-bottom: 10px;
   }
   
   /* Left Sidebar - hidden by default on mobile */
@@ -2467,7 +2469,7 @@ body {
   .chat-header {
     padding: 10px;
     gap: 8px;
-    padding-top: 50px;
+    /* padding-top: 50px; */
   }
   
   #current-model-display {
@@ -2523,11 +2525,13 @@ body {
     width: 100%;
     position: fixed;
     z-index: 200;
+    padding-top: 50px;
   }
   
   /* VOX Core mobile */
   .vox-core-container {
     padding: 20px 10px;
+    /* padding-top: 50px; */
   }
   
   .vox-header h2 {

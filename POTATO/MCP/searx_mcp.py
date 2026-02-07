@@ -3,7 +3,11 @@ import requests
 import re
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup, NavigableString, Tag
+import tempfile
 from POTATO.components.visual_tools.extract_text import fast_extract_pdf_text
+import os
+from urllib.parse import urlparse
+
 SEARX_URL = "http://localhost:8080/search"  # Change to your SearXNG instance URL, probably the same. you can also use a public instance but be aware of privacy implications.
 MAX_RESULTS = 5
 
@@ -84,15 +88,52 @@ def _potatool_extract_content_impl(
     url: str
 ) -> dict:
     """
-    Extract human-readable content from a web page URL.
+    Extract human-readable content from a web page URL or direct file URL.
     Use with the relevant URLs retrieved after calling "potatool_web_search_urls" tool.
     Preserves <a href="...">text</a> links exactly as-is.
     Preserves tables in simplified HTML (<table><tr><th><td> only, no attributes).
     Flattens all other elements (including headings, paragraphs, lists, code blocks, divs, spans, etc.) to plain text.
-    
+
     Useful for AI agents to understand full page content without full HTML clutter.
     """
     try:
+        # Check if URL points to a file (has file extension)
+        parsed = urlparse(url)
+        path = parsed.path
+        _, ext = os.path.splitext(path)
+
+        if ext.lower() == '.pdf':
+            # Download PDF and extract text
+            tmp_path = None
+            try:
+                resp = requests.get(url, timeout=20)
+                resp.raise_for_status()
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+                    tmp.write(resp.content)
+                    tmp_path = tmp.name
+                result = fast_extract_pdf_text(tmp_path)
+                return {"url": url, "content": result.get("text", ""), "error": result.get("error")}
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+        elif ext.lower() in ['.txt', '.md', '.csv', '.json', '.xml', '.log', '.py', '.cpp', '.c', '.h', '.hpp', 
+    '.java', '.js', '.ts', '.rs', '.go', '.rb', '.php', '.sh', '.bash', '.yml', '.yaml', 
+    '.toml', '.ini', '.cfg', '.html', '.css', '.scss', '.less', '.rst', '.tex', '.bib', 
+    '.sql', '.patch', '.diff', '.properties', '.env', '.conf', '.dockerfile', '.gitignore', 
+    '.yaml', '.json5', '.graphql', '.cson', '.ldif', '.rdf', '.tsv', '.ics', '.asciidoc', 
+    '.adoc', '.sqlite', '.tsx', '.jsx', '.vue', '.svelte', '.erb', '.twig', '.liquid', 
+    '.mdx', '.org', '.xhtml', '.xml', '.gitmodules', '.npmrc', '.eslint', '.babelrc', 
+    '.prettierrc', '.eslintignore', '.editorconfig', '.sublime-project', '.sublime-workspace', 
+    '.vscode', '.nfo', '.zshrc']:
+            # Download text file securely (read-only, no execution)
+            resp = requests.get(url, timeout=20)
+            resp.raise_for_status()
+            # Decode safely, limit size to prevent memory issues
+            if len(resp.content) > 10_000_000:  # 10MB limit
+                return {"url": url, "content": "", "error": "File too large (>10MB)"}
+            content = resp.content.decode('utf-8', errors='ignore')
+            return {"url": url, "content": content, "error": None}
+
         # Use realistic browser headers to avoid blocking
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -108,7 +149,7 @@ def _potatool_extract_content_impl(
             'Sec-Fetch-User': '?1',
             'Cache-Control': 'max-age=0'
         }
-        
+
         # Try with longer timeout and follow redirects
         resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
         resp.raise_for_status()

@@ -1568,10 +1568,10 @@ function renderMarkdown(element, text) {
                 return placeholder;
             });
 
-            // Protect \[...\] display math blocks
-            s = s.replace(/\\\[([\s\S]*?)\\\]/g, (match) => {
+            // Protect \[...\] display math blocks - convert to $$
+            s = s.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => {
                 const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
-                protectedBlocks[blockIndex] = match;
+                protectedBlocks[blockIndex] = '$$' + inner + '$$';
                 blockIndex++;
                 return placeholder;
             });
