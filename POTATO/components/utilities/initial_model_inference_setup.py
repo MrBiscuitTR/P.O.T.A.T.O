@@ -28,6 +28,18 @@ def detect_model_tags(model_name):
     """
     print(f"\n[DETECTION] Testing {model_name}...")
     
+    # First check if analyzer model is available
+    analyzer_model = "qwen2.5-coder:7b"
+    try:
+        models_response = ollama.list()
+        available_models = [m.get('name', '') for m in models_response.get('models', [])]
+        if not any(analyzer_model in m for m in available_models):
+            print(f"[DETECTION] Analyzer model {analyzer_model} not installed - using safe defaults")
+            return get_default_tags()
+    except Exception as e:
+        print(f"[DETECTION] Could not check available models: {e}")
+        return get_default_tags()
+    
     # Test prompt designed to elicit thinking and tool usage patterns
     test_messages = [
         {
@@ -42,10 +54,12 @@ def detect_model_tags(model_name):
     
     # Run inference and capture raw output
     try:
+        print(f"[DETECTION] Running test inference on {model_name}...")
         response = ollama.chat(
             model=model_name,
             messages=test_messages,
-            stream=False
+            stream=False,
+            options={'num_predict': 500}  # Limit output length for faster detection
         )
         
         raw_output = response.get('message', {}).get('content', '')
@@ -57,31 +71,44 @@ def detect_model_tags(model_name):
         print(f"[SAMPLE OUTPUT]\n{raw_output[:500]}...\n")
         
         # Use qwen2.5-coder:7b to analyze the structure
-        analysis_prompt = f"""Analyze this LLM output and determine its tag structure:
+        analysis_prompt = f"""Analyze this LLM output and determine if it uses EXPLICIT thinking/reasoning tags.
 
-OUTPUT:
+OUTPUT TO ANALYZE:
 ```
 {raw_output}
 ```
 
-Identify:
-1. Thinking/reasoning tags (e.g., <think></think>, <reasoning></reasoning>, or none)
-2. Whether thinking appears inline or separate
-3. Any special formatting patterns
+IMPORTANT RULES:
+1. MOST models do NOT use thinking tags - they just output plain text
+2. Valid thinking tags are ONLY XML-style tags like: <think></think>, <reasoning></reasoning>, <thought></thought>, <reflection></reflection>
+3. These are NOT thinking tags:
+   - Markdown formatting: **bold**, *italic*, ## headers, - bullets, 1. numbered lists
+   - HTML tags: <p>, <div>, <br>, <ol>, <li>, etc.
+   - Code blocks: ```code```
+   - Random angle brackets in text
+4. Thinking tags must WRAP reasoning content, not just appear randomly
+5. If the model just shows step-by-step reasoning in plain text, that's NOT using thinking tags
 
-Respond ONLY with valid JSON in this exact format:
+Respond with ONLY valid JSON:
 {{
     "thinking_tags": {{"open": "<tag>", "close": "</tag>"}},
     "has_inline_thinking": true/false,
-    "notes": "brief observation"
+    "notes": "brief reason for your decision"
 }}
 
-If no thinking tags found, use: {{"open": "", "close": ""}}"""
+If the model does NOT use explicit XML-style thinking tags (which is the common case), respond:
+{{
+    "thinking_tags": {{"open": "", "close": ""}},
+    "has_inline_thinking": false,
+    "notes": "Model outputs plain text without thinking tags"
+}}"""
 
+        print(f"[DETECTION] Analyzing output with {analyzer_model}...")
         analysis_response = ollama.chat(
-            model="qwen2.5-coder:7b",
+            model=analyzer_model,
             messages=[{"role": "user", "content": analysis_prompt}],
-            stream=False
+            stream=False,
+            options={'num_predict': 200}  # JSON response should be short
         )
         
         analysis_text = analysis_response.get('message', {}).get('content', '')
@@ -95,6 +122,23 @@ If no thinking tags found, use: {{"open": "", "close": ""}}"""
             
             # Validate and structure the result
             thinking_tags = analysis_json.get('thinking_tags', {'open': '', 'close': ''})
+            
+            # VALIDATION: Reject non-XML tags (markdown formatting like ** or * is NOT valid)
+            open_tag = thinking_tags.get('open', '')
+            close_tag = thinking_tags.get('close', '')
+            
+            # Valid thinking tags must be XML-style: start with < and end with >
+            # Reject markdown formatting like **, *, ##, etc.
+            invalid_patterns = ['**', '*', '##', '#', '```', '`', '__', '_']
+            is_valid_tag = (
+                (open_tag == '' and close_tag == '') or  # No tags is valid
+                (open_tag.startswith('<') and open_tag.endswith('>') and 
+                 close_tag.startswith('</') and close_tag.endswith('>'))
+            )
+            
+            if not is_valid_tag or open_tag in invalid_patterns or close_tag in invalid_patterns:
+                print(f"[VALIDATION] Rejected invalid tags: {thinking_tags} - not XML-style")
+                thinking_tags = {'open': '', 'close': ''}
             
             result = {
                 'thinking_tags': thinking_tags,
@@ -116,12 +160,12 @@ If no thinking tags found, use: {{"open": "", "close": ""}}"""
 
 
 def get_default_tags():
-    """Return default tag structure"""
+    """Return default tag structure - defaults to NO tags for safety"""
     return {
-        'thinking_tags': {'open': '<think>', 'close': '</think>'},
+        'thinking_tags': {'open': '', 'close': ''},
         'has_inline_thinking': False,
         'supports_streaming_thinking': False,
-        'detection_notes': 'Using default tags',
+        'detection_notes': 'Using safe defaults (no tags)',
         'detection_date': datetime.now().isoformat()
     }
 

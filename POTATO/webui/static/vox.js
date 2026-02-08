@@ -13,6 +13,14 @@ let whisperLoading = false;
 let voxSilenceTimeout = null;
 let voxLastAudioLevel = 0;
 
+// CRITICAL: Global stop flag to prevent continuous mode from restarting
+let voxShouldStop = false;
+
+// Track manual unloads (different from graceful exit unloads)
+window.sttManuallyUnloaded = false;
+window.ttsManuallyUnloaded = false;
+window.whisperModelLoaded = false;
+
 // Create loading overlay
 function createVOXLoadingOverlay() {
     const existingOverlay = document.getElementById('vox-loading-overlay');
@@ -151,6 +159,12 @@ async function initVOX() {
         // Initialize audio context
         voxAudioContext = new (window.AudioContext || window.webkitAudioContext)();
         
+        // Start interrupt monitoring
+        if (window.VOXInterrupt) {
+            window.VOXInterrupt.start();
+            console.log('[VOX] Interrupt monitoring started');
+        }
+        
         console.log('VOX initialized');
     } catch (error) {
         console.error('Error initializing VOX:', error);
@@ -228,6 +242,9 @@ async function setAudioDevice(deviceIndex, deviceName) {
 // Start voice recording
 async function startVOXRecording() {
     console.log('[VOX] startVOXRecording called, voxIsListening:', voxIsListening);
+    
+    // CRITICAL: Reset stop flag when user manually starts recording
+    voxShouldStop = false;
     
     // Reload STT if it was manually unloaded
     if (window.sttManuallyUnloaded) {
@@ -375,6 +392,11 @@ async function startVOXRecording() {
         voxMediaRecorder.ondataavailable = (event) => {
             if (event.data.size > 0) {
                 voxAudioChunks.push(event.data);
+                
+                // CRITICAL: Process chunk for interrupt detection
+                if (window.VOXInterrupt) {
+                    window.VOXInterrupt.processChunk(event.data);
+                }
             }
         };
         
@@ -418,6 +440,9 @@ async function startVOXRecording() {
         voxMediaRecorder.start();
         console.log('[VOX] MediaRecorder started');
         
+        // Start continuous transcription for interrupt detection
+        startContinuousTranscription();
+        
         // Update UI
         const recordBtn = document.getElementById('vox-record-btn');
         if (recordBtn) {
@@ -444,6 +469,9 @@ function stopVOXRecording() {
         return;
     }
     
+    // Stop continuous transcription
+    stopContinuousTranscription();
+    
     voxIsListening = false;
     voxMediaRecorder.stop();
     
@@ -462,6 +490,51 @@ async function transcribeAndRespond(audioBlob) {
     console.log('[VOX] transcribeAndRespond called, audioBlob size:', audioBlob.size);
     
     try {
+        // Check if we should only process post-TTS audio
+        if (window.VOXInterrupt) {
+            const audioData = window.VOXInterrupt.getAudio();
+            
+            // If TTS is still speaking, check for interrupts only
+            if (audioData.interruptOnly && audioData.audio) {
+                console.log('[VOX] TTS speaking - checking for interrupt words only');
+                
+                // Quick transcription check for interrupt
+                const formData = new FormData();
+                const ext = audioData.audio.type.includes('wav') ? 'wav' : 'webm';
+                formData.append('audio', audioData.audio, `interrupt-check.${ext}`);
+                formData.append('language', voxLanguage || 'en');
+                
+                const response = await fetch('/api/transcribe_realtime', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.text) {
+                        const isInterrupt = await window.VOXInterrupt.handleInterrupt(data.text);
+                        if (isInterrupt) {
+                            console.log('[VOX] Interrupt detected, TTS stopped');
+                            updateVOXStatus('Interrupted - Ready');
+                        }
+                    }
+                }
+                
+                // Don't process as user prompt - TTS still speaking
+                return;
+            }
+            
+            // Use post-TTS audio if available
+            if (audioData.audio && !audioData.interruptOnly) {
+                console.log('[VOX] Using post-TTS audio for transcription');
+                audioBlob = audioData.audio;
+            } else if (!audioData.audio) {
+                console.log('[VOX] No post-TTS audio to process');
+                updateVOXStatus('Ready');
+                return;
+            }
+        }
+        
         // Show loading overlay on first use
         const loadingOverlay = document.getElementById('vox-loading-overlay');
         if (loadingOverlay && !window.whisperModelLoaded) {
@@ -587,10 +660,17 @@ async function transcribeAndRespond(audioBlob) {
                                 recordBtn.classList.remove('recording');
                             }
                             
-                            // Auto-restart listening if continuous mode enabled
-                            if (document.getElementById('vox-continuous')?.checked) {
+                            // Auto-restart listening if continuous mode enabled AND not explicitly stopped
+                            if (document.getElementById('vox-continuous')?.checked && !voxShouldStop) {
                                 console.log('[VOX] Continuous mode enabled, restarting in 500ms...');
-                                setTimeout(() => startVOXRecording(), 500);
+                                setTimeout(() => {
+                                    // Double-check the flag before actually restarting
+                                    if (!voxShouldStop) {
+                                        startVOXRecording();
+                                    } else {
+                                        console.log('[VOX] Stop flag set, aborting continuous restart');
+                                    }
+                                }, 500);
                             }
                         }
                         
@@ -632,6 +712,72 @@ async function transcribeAndRespond(audioBlob) {
         }
         
         // Do NOT restart listening - user must click button again
+    }
+}
+
+// Continuous transcription during recording (for interrupt detection)
+let continuousTranscriptionInterval = null;
+
+async function startContinuousTranscription() {
+    if (!window.VOXInterrupt) {
+        console.warn('[VOX] VOXInterrupt module not available, skipping continuous transcription');
+        return;
+    }
+    
+    // Stop any existing interval
+    if (continuousTranscriptionInterval) {
+        clearInterval(continuousTranscriptionInterval);
+    }
+    
+    // Check every 2 seconds during recording
+    continuousTranscriptionInterval = setInterval(async () => {
+        if (!voxIsListening || !voxMediaRecorder || voxMediaRecorder.state !== 'recording') {
+            return;
+        }
+        
+        // Only check for interrupts if TTS is speaking
+        if (!window.VOXInterrupt.isSpeaking()) {
+            return;
+        }
+        
+        console.log('[VOX] Continuous check - TTS is speaking, checking for interrupts');
+        
+        // Create a temporary chunk for interrupt detection
+        if (voxAudioChunks.length > 0) {
+            const recentChunk = new Blob([voxAudioChunks[voxAudioChunks.length - 1]], { type: 'audio/webm' });
+            
+            try {
+                const formData = new FormData();
+                formData.append('audio', recentChunk, 'interrupt-check.webm');
+                formData.append('language', voxLanguage || 'en');
+                
+                const response = await fetch('/api/transcribe_realtime', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.text) {
+                        const isInterrupt = await window.VOXInterrupt.handleInterrupt(data.text);
+                        if (isInterrupt) {
+                            console.log('[VOX] Interrupt detected during continuous monitoring');
+                            updateVOXStatus('Interrupted - Listening...');
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('[VOX] Error in continuous transcription:', error);
+            }
+        }
+    }, 2000); // Check every 2 seconds
+}
+
+function stopContinuousTranscription() {
+    if (continuousTranscriptionInterval) {
+        clearInterval(continuousTranscriptionInterval);
+        continuousTranscriptionInterval = null;
+        console.log('[VOX] Stopped continuous transcription');
     }
 }
 
@@ -954,6 +1100,102 @@ async function deleteCurrentVoiceChat() {
     }
 }
 
+// EMERGENCY STOP ALL - Stops everything without unloading models
+async function stopAllVOX() {
+    console.log('[VOX] EMERGENCY STOP ALL initiated');
+    
+    // Set global stop flag to prevent continuous mode from restarting
+    voxShouldStop = true;
+    
+    // 1. Stop recording if active
+    if (voxIsListening && voxMediaRecorder && voxMediaRecorder.state === 'recording') {
+        console.log('[VOX] Stopping recording...');
+        voxMediaRecorder.stop();
+        voxIsListening = false;
+    }
+    
+    // 2. Stop TTS playback immediately
+    if (voxCurrentAudio) {
+        console.log('[VOX] Stopping TTS playback...');
+        voxCurrentAudio.pause();
+        voxCurrentAudio.currentTime = 0;
+        voxCurrentAudio = null;
+    }
+    
+    // 3. Call backend to stop TTS and Ollama inference
+    try {
+        await fetch('/api/stop_all_vox', { method: 'POST' });
+        console.log('[VOX] Backend stopped');
+    } catch (e) {
+        console.error('[VOX] Error stopping backend:', e);
+    }
+    
+    // 4. Reset UI state
+    voxIsSpeaking = false;
+    const recordBtn = document.getElementById('vox-record-btn');
+    if (recordBtn) {
+        recordBtn.innerHTML = '<i class="fas fa-microphone"></i> Start Recording';
+        recordBtn.classList.remove('recording');
+    }
+    
+    updateVOXStatus('Stopped');
+    console.log('[VOX] \u2713 All processes stopped');
+}
+
+// Unload STT (Whisper) only
+async function unloadSTT() {
+    try {
+        console.log('[STT] Unloading Whisper...');
+        updateVOXStatus('Unloading STT...');
+        
+        const response = await fetch('/api/unload_stt', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            window.sttManuallyUnloaded = true;
+            window.whisperModelLoaded = false;
+            whisperLoaded = false;
+            updateVOXStatus('STT unloaded');
+            console.log('[STT] \u2713 Unloaded successfully');
+        } else {
+            updateVOXStatus(`STT unload error: ${result.error}`);
+            console.error('[STT] Error:', result.error);
+        }
+    } catch (error) {
+        console.error('[STT] Unload error:', error);
+        updateVOXStatus('STT unload failed');
+    }
+}
+
+// Unload TTS only
+async function unloadTTS() {
+    try {
+        console.log('[TTS] Unloading TTS models...');
+        updateVOXStatus('Unloading TTS...');
+        
+        // Stop any playing audio first
+        if (voxCurrentAudio) {
+            voxCurrentAudio.pause();
+            voxCurrentAudio = null;
+        }
+        
+        const response = await fetch('/api/unload_tts', { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            window.ttsManuallyUnloaded = true;
+            updateVOXStatus('TTS unloaded');
+            console.log('[TTS] \u2713 Unloaded successfully');
+        } else {
+            updateVOXStatus(`TTS unload error: ${result.error}`);
+            console.error('[TTS] Error:', result.error);
+        }
+    } catch (error) {
+        console.error('[TTS] Unload error:', error);
+        updateVOXStatus('TTS unload failed');
+    }
+}
+
 // Export functions for global use IMMEDIATELY (before DOMContentLoaded)
 if (typeof window.VOX === 'undefined') {
     window.VOX = {
@@ -961,6 +1203,7 @@ if (typeof window.VOX === 'undefined') {
         startRecording: startVOXRecording,
         stopRecording: stopVOXRecording,
         stopSpeaking: stopVOXSpeaking,
+        stopAll: stopAllVOX,
         clearChat: clearVOXChat,
         setLanguage: (lang) => { voxLanguage = lang; },
         setAudioDevice: setAudioDevice,
@@ -976,6 +1219,9 @@ window.loadVoiceChatList = loadVoiceChatList;
 window.filterVoiceChats = filterVoiceChats;
 window.loadVoiceChat = loadVoiceChat;
 window.deleteCurrentVoiceChat = deleteCurrentVoiceChat;
+window.unloadSTT = unloadSTT;
+window.unloadTTS = unloadTTS;
+window.stopAllVOX = stopAllVOX;
 
 // Also export setAudioDevice globally for HTML onchange handler
 window.setAudioDevice = setAudioDevice;

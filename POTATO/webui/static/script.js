@@ -8,11 +8,23 @@ let voxLanguage = 'en';  // Shared with vox.js
 let webSearchEnabled = false;
 let stealthMode = false;
 let uploadedFiles = [];
+let uploadedImages = [];  // For vision model image uploads
 let settings = {};
 let currentSettingsTab = 'core';
 let configDescriptions = {}; // Descriptions from config.env.txt
 let isGenerating = false; // Track if AI is currently generating
 let currentAbortController = null; // Controller to cancel ongoing requests
+
+// Upload preview state - unified for files and images
+let uploadPreviews = [];  // Array of {id, filename, path, type, isImage, base64, embedded, uploadProgress, abortController}
+let pasteUploadsUseRag = false;  // Setting from config
+const MAX_PASTE_UPLOADS = 20;
+
+// Vision model state
+let currentModelIsVision = false;
+let backupVisionModel = 'llava:7b';
+let canProcessImages = false;
+let availableVisionModels = [];
 
 // Model unload flags (shared with VOX Core)
 window.sttManuallyUnloaded = false;
@@ -22,7 +34,9 @@ window.ttsManuallyUnloaded = false;
 async function loadConfigDescriptions() {
     try {
         const response = await fetch('/api/settings/descriptions');
-        configDescriptions = await response.json();
+        configDescriptions = await response.json().catch(error => {
+            console.error('Error parsing config descriptions:', error);
+        });
     } catch (error) {
         console.error('Error loading config descriptions:', error);
     }
@@ -34,11 +48,11 @@ let autoScrollEnabled = true;  // Auto-scroll by default
 // Configure marked.js for markdown rendering
 if (typeof marked !== 'undefined') {
     marked.setOptions({
-        highlight: function(code, lang) {
-            if (lang && hljs.getLanguage(lang)) {
-                return hljs.highlight(code, { language: lang }).value;
-            }
-            return hljs.highlightAuto(code).value;
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    return hljs.highlight(code, { language: lang }).value;
+                }
+                return hljs.highlightAuto(code).value;
         },
         breaks: true,
         gfm: true
@@ -125,6 +139,9 @@ document.addEventListener('DOMContentLoaded', () => {
             autoScrollEnabled = isAtBottom;
         });
     }
+    
+    // Paste event listener for file/image uploads (only on document to avoid duplicates)
+    document.addEventListener('paste', handlePaste);
 });
 
 // --- PREFERENCES ---
@@ -167,16 +184,28 @@ async function savePreferences() {
 async function loadModels() {
     try {
         const response = await fetch('/api/models');
-        const data = await response.json();
+        const data = await response.json().catch(error => {
+            console.error('Error loading models:', error);
+        });
         
         const selector = document.getElementById('model-selector');
         selector.innerHTML = '';
+        
+        // Build a map of model vision capabilities
+        const visionMap = {};
+        if (data.models_info) {
+            data.models_info.forEach(info => {
+                visionMap[info.name] = info.is_vision;
+            });
+        }
         
         if (data.models && data.models.length > 0) {
             data.models.forEach(model => {
                 const option = document.createElement('option');
                 option.value = model;
-                option.textContent = model;
+                // Add (VL) suffix for vision-capable models
+                const isVision = visionMap[model] || false;
+                option.textContent = isVision ? `${model} (VL)` : model;
                 selector.appendChild(option);
             });
             
@@ -190,14 +219,546 @@ async function loadModels() {
         }
         
         updateModelDisplay();
+        // Check vision capability for current model
+        await checkVisionCapability();
     } catch (error) {
         console.error('Error loading models:', error);
     }
 }
 
 function updateModelDisplay() {
-    document.getElementById('current-model-display').textContent = `Model: ${currentModel}`;
+    // Show (VL) suffix if current model is vision-capable
+    const displayText = currentModelIsVision ? `AI: ${currentModel} (VL)` : `AI: ${currentModel}`;
+    document.getElementById('current-model-display').textContent = displayText;
 }
+
+async function checkVisionCapability() {
+    // Check if current model supports vision and update UI accordingly
+    try {
+        const response = await fetch('/api/check_vision_capability', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: currentModel })
+        });
+        const data = await response.json();
+        
+        currentModelIsVision = data.is_vision;
+        backupVisionModel = data.backup_vision_model;
+        canProcessImages = data.can_process_images;
+        availableVisionModels = data.available_vision_models || [];
+        
+        // Update model display with vision badge
+        updateModelDisplay();
+        
+        // Update UI to show/hide image upload warnings
+        updateVisionUI();
+        
+        console.log(`[VISION] Model: ${currentModel}, isVision: ${currentModelIsVision}, canProcess: ${canProcessImages}`);
+    } catch (error) {
+        console.error('Error checking vision capability:', error);
+        currentModelIsVision = false;
+        canProcessImages = false;
+    }
+}
+
+function updateVisionUI() {
+    // Show/hide warning banner based on vision capability
+    let warningBanner = document.getElementById('vision-warning-banner');
+    
+    if (!canProcessImages) {
+        // No vision model available at all
+        if (!warningBanner) {
+            warningBanner = document.createElement('div');
+            warningBanner.id = 'vision-warning-banner';
+            warningBanner.className = 'vision-warning-banner';
+            const inputContainer = document.querySelector('.input-area-container');
+            if (inputContainer) {
+                inputContainer.insertBefore(warningBanner, inputContainer.firstChild);
+            }
+        }
+        warningBanner.innerHTML = `
+            <i class="fas fa-exclamation-triangle"></i>
+            <span>No vision model available. Image uploads disabled. Install a vision model (e.g., llava:7b) via Ollama.</span>
+            <button onclick="this.parentElement.style.display='none'" class="close-banner">&times;</button>
+        `;
+        warningBanner.style.display = 'flex';
+        
+        // Disable image upload
+        const imageUploadIcon = document.querySelector('.widget-icon[title="Upload Image"]');
+        if (imageUploadIcon) {
+            imageUploadIcon.classList.add('disabled');
+            imageUploadIcon.title = 'No vision model available';
+        }
+    } else if (!currentModelIsVision && availableVisionModels.length > 0) {
+        // Backup model available but not current model
+        if (!warningBanner) {
+            warningBanner = document.createElement('div');
+            warningBanner.id = 'vision-warning-banner';
+            warningBanner.className = 'vision-info-banner';
+            const inputContainer = document.querySelector('.input-area-container');
+            if (inputContainer) {
+                inputContainer.insertBefore(warningBanner, inputContainer.firstChild);
+            }
+        }
+        warningBanner.innerHTML = `
+            <i class="fas fa-info-circle"></i>
+            <span>Current model doesn't support images. Backup model (${backupVisionModel}) will be used for image processing.</span>
+            <button onclick="this.parentElement.style.display='none'" class="close-banner">&times;</button>
+        `;
+        warningBanner.className = 'vision-info-banner';
+        warningBanner.style.display = 'flex';
+        
+        // Enable image upload
+        const imageUploadIcon = document.querySelector('.widget-icon[title*="Image"]');
+        if (imageUploadIcon) {
+            imageUploadIcon.classList.remove('disabled');
+        }
+    } else {
+        // Vision model is active
+        if (warningBanner) {
+            warningBanner.style.display = 'none';
+        }
+        
+        // Enable image upload
+        const imageUploadIcon = document.querySelector('.widget-icon[title*="Image"]');
+        if (imageUploadIcon) {
+            imageUploadIcon.classList.remove('disabled');
+        }
+    }
+    
+    // Update uploaded images display
+    updateUploadedImagesDisplay();
+}
+
+function updateUploadedImagesDisplay() {
+    // Clear uploaded images if vision not available
+    if (!canProcessImages && uploadedImages.length > 0) {
+        uploadedImages = [];
+        appendMessage('Images cleared - no vision model available', 'system');
+    }
+    
+    // Update UI to show uploaded images count
+    const imageCountSpan = document.getElementById('uploaded-images-count');
+    if (imageCountSpan) {
+        imageCountSpan.textContent = uploadedImages.length > 0 ? `(${uploadedImages.length} images)` : '';
+    }
+    
+    // Also update the new unified preview
+    renderUploadPreviews();
+}
+
+// ===============================================
+// PASTE UPLOAD HANDLING
+// ===============================================
+
+function handlePaste(e) {
+    const items = e.clipboardData?.items;
+    if (!items || items.length === 0) return;
+    
+    const files = [];
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.kind === 'file') {
+            const file = item.getAsFile();
+            if (file) files.push(file);
+        }
+    }
+    
+    if (files.length === 0) return;
+    
+    // Prevent default paste if we have files
+    e.preventDefault();
+    
+    // Check limit
+    if (uploadPreviews.length + files.length > MAX_PASTE_UPLOADS) {
+        appendMessage(`Maximum ${MAX_PASTE_UPLOADS} files allowed at a time. You have ${uploadPreviews.length} already.`, 'system');
+        return;
+    }
+    
+    // Upload each file
+    files.forEach(file => {
+        uploadPastedFile(file);
+    });
+}
+
+async function uploadPastedFile(file) {
+    const isImage = file.type.startsWith('image/');
+    const id = 'upload-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+    
+    // Check if image and no vision available
+    if (isImage && !canProcessImages) {
+        appendMessage(`Cannot upload image "${file.name}" - no vision model available`, 'system');
+        return;
+    }
+    
+    // Create preview entry
+    const preview = {
+        id: id,
+        filename: file.name,
+        path: null,
+        type: getFileType(file.name),
+        isImage: isImage,
+        base64: null,
+        embedded: false,
+        uploadProgress: 0,
+        abortController: new AbortController(),
+        file: file  // Keep reference for potential re-upload
+    };
+    
+    uploadPreviews.push(preview);
+    renderUploadPreviews();
+    
+    // Generate a proper UUID for new chats if no session exists
+    // This will be used as the folder name for uploads
+    if (!currentSessionId) {
+        currentSessionId = crypto.randomUUID();
+        console.log('[UPLOAD] Generated new session ID:', currentSessionId);
+    }
+    
+    // Create FormData
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('chat_id', currentSessionId);
+    formData.append('model', currentModel);
+    formData.append('use_rag', pasteUploadsUseRag ? 'true' : 'false');
+    
+    try {
+        // Use XMLHttpRequest for progress tracking
+        await uploadWithProgress(preview, formData);
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            // Upload was cancelled, remove from previews
+            const idx = uploadPreviews.findIndex(p => p.id === id);
+            if (idx > -1) uploadPreviews.splice(idx, 1);
+            renderUploadPreviews();
+        } else {
+            console.error('Upload error:', error);
+            preview.uploadProgress = -1;  // Mark as failed
+            renderUploadPreviews();
+            appendMessage(`Failed to upload "${file.name}": ${error.message}`, 'system');
+        }
+    }
+}
+
+function uploadWithProgress(preview, formData) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        
+        // Store xhr for cancellation
+        preview.xhr = xhr;
+        
+        xhr.upload.addEventListener('progress', (e) => {
+            if (e.lengthComputable) {
+                preview.uploadProgress = Math.round((e.loaded / e.total) * 100);
+                renderUploadPreviews();
+            }
+        });
+        
+        xhr.addEventListener('load', () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    if (data.success) {
+                        preview.path = data.path;
+                        preview.uploadProgress = 100;
+                        preview.embedded = data.embedded || false;
+                        
+                        // Handle different response types based on file and model
+                        if (preview.isImage) {
+                            // ALWAYS store base64 for images - let send decide based on current model
+                            if (data.image_base64) {
+                                uploadedImages.push({
+                                    filename: data.filename,
+                                    base64: data.image_base64,
+                                    description: data.description || null  // Fallback description for non-VL
+                                });
+                                console.log('[UPLOAD] Image stored:', data.filename, 'base64 length:', data.image_base64?.length || 0);
+                                
+                                // If there's also a description (non-VL fallback), store it too
+                                if (data.description) {
+                                    console.log('[UPLOAD] Also has description for non-VL fallback:', data.description.length, 'chars');
+                                }
+                            } else if (data.content) {
+                                // Fallback: no base64, just description
+                                uploadedFiles.push({
+                                    filename: data.filename,
+                                    content: data.content,
+                                    file_type: 'image_description'
+                                });
+                                console.log('[UPLOAD] Image as text only:', data.filename);
+                            }
+                        } else {
+                            // PDF or text file handling
+                            if (data.file_type === 'pdf' && data.pdf_pages_base64) {
+                                // PDF with page images - store for VL models
+                                const pdfEntry = {
+                                    filename: data.filename,
+                                    base64: data.pdf_pages_base64,  // Array of base64 images (may be limited to 8 for large PDFs)
+                                    isPdf: true,
+                                    pages: data.pages || data.pdf_pages_base64.length
+                                };
+                                
+                                // If PDF was batch OCR-processed (>8 pages), include extracted content
+                                if (data.ocr_processed && data.content) {
+                                    pdfEntry.ocr_processed = true;
+                                    pdfEntry.content = data.content;
+                                    pdfEntry.ocr_model = data.ocr_model;
+                                    console.log('[UPLOAD] PDF batch OCR processed:', data.filename, 'pages:', data.pages, 'text:', data.content.length, 'chars');
+                                } else {
+                                    console.log('[UPLOAD] PDF stored as images:', data.filename, 'pages:', data.pdf_pages_base64.length);
+                                }
+                                
+                                uploadedImages.push(pdfEntry);
+                                
+                                // Also store text content as fallback for non-VL models
+                                if (data.content) {
+                                    uploadedFiles.push({
+                                        filename: data.filename,
+                                        content: data.content,
+                                        file_type: data.file_type,
+                                        pages: data.pages
+                                    });
+                                    console.log('[UPLOAD] PDF also has text fallback:', data.content?.length, 'chars');
+                                }
+                            } else {
+                                // Regular text file or PDF text extraction
+                                uploadedFiles.push({
+                                    filename: data.filename,
+                                    content: data.content,
+                                    file_type: data.file_type,
+                                    pages: data.pages
+                                });
+                                console.log('[UPLOAD] Added file:', data.filename, 'content length:', data.content?.length || 0, 'pages:', data.pages || 'N/A');
+                            }
+                        }
+                        
+                        renderUploadPreviews();
+                        resolve(data);
+                    } else {
+                        reject(new Error(data.error || 'Upload failed'));
+                    }
+                } catch (e) {
+                    reject(new Error('Invalid server response'));
+                }
+            } else {
+                reject(new Error(`HTTP ${xhr.status}`));
+            }
+        });
+        
+        xhr.addEventListener('error', () => reject(new Error('Network error')));
+        xhr.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        
+        xhr.open('POST', '/api/upload_chat_file');
+        xhr.send(formData);
+    });
+}
+
+function getFileType(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    const types = {
+        'pdf': 'pdf',
+        'doc': 'word', 'docx': 'word',
+        'xls': 'excel', 'xlsx': 'excel', 'csv': 'excel',
+        'py': 'code', 'js': 'code', 'ts': 'code', 'html': 'code', 'css': 'code', 'json': 'code', 'xml': 'code',
+        'zip': 'archive', 'rar': 'archive', '7z': 'archive', 'tar': 'archive', 'gz': 'archive',
+        'png': 'image', 'jpg': 'image', 'jpeg': 'image', 'gif': 'image', 'webp': 'image', 'bmp': 'image',
+        'txt': 'text', 'md': 'text'
+    };
+    return types[ext] || 'file';
+}
+
+function getFileIcon(type) {
+    const icons = {
+        'pdf': 'fa-file-pdf',
+        'word': 'fa-file-word',
+        'excel': 'fa-file-excel',
+        'code': 'fa-file-code',
+        'archive': 'fa-file-archive',
+        'image': 'fa-file-image',
+        'text': 'fa-file-alt',
+        'file': 'fa-file'
+    };
+    return icons[type] || 'fa-file';
+}
+
+function renderUploadPreviews() {
+    const container = document.getElementById('upload-preview-container');
+    const scroll = document.getElementById('upload-preview-scroll');
+    
+    if (!container || !scroll) return;
+    
+    // Show/hide container
+    container.style.display = uploadPreviews.length > 0 ? 'block' : 'none';
+    
+    // Clear and rebuild
+    scroll.innerHTML = '';
+    
+    uploadPreviews.forEach(preview => {
+        const item = document.createElement('div');
+        item.className = 'upload-preview-item';
+        if (preview.embedded) item.classList.add('embedded');
+        if (preview.uploadProgress < 100 && preview.uploadProgress >= 0) item.classList.add('uploading');
+        
+        // Thumbnail
+        const thumb = document.createElement('div');
+        thumb.className = 'upload-preview-thumb';
+        
+        if (preview.isImage && preview.base64) {
+            const img = document.createElement('img');
+            img.src = 'data:image/png;base64,' + preview.base64;
+            img.alt = preview.filename;
+            thumb.appendChild(img);
+        } else if (preview.isImage && preview.file) {
+            // Show preview while uploading
+            const img = document.createElement('img');
+            img.src = URL.createObjectURL(preview.file);
+            img.alt = preview.filename;
+            thumb.appendChild(img);
+        } else {
+            const icon = document.createElement('i');
+            icon.className = 'fas ' + getFileIcon(preview.type);
+            thumb.appendChild(icon);
+        }
+        
+        item.appendChild(thumb);
+        
+        // Info
+        const info = document.createElement('div');
+        info.className = 'upload-preview-info';
+        
+        const name = document.createElement('div');
+        name.className = 'upload-preview-name';
+        name.textContent = preview.filename;
+        name.title = preview.filename;
+        info.appendChild(name);
+        
+        const status = document.createElement('div');
+        status.className = 'upload-preview-status';
+        if (preview.uploadProgress < 0) {
+            status.textContent = 'Failed';
+            status.style.color = 'var(--accent-color)';
+        } else if (preview.uploadProgress < 100) {
+            status.textContent = preview.uploadProgress + '%';
+        } else if (preview.embedded) {
+            status.textContent = 'RAG';
+            status.classList.add('embedded');
+        } else {
+            status.textContent = 'Ready';
+        }
+        info.appendChild(status);
+        
+        item.appendChild(info);
+        
+        // Circular progress indicator (while uploading) - positioned in top-left corner
+        if (preview.uploadProgress >= 0 && preview.uploadProgress < 100) {
+            const circularProgress = document.createElement('div');
+            circularProgress.className = 'upload-circular-progress';
+            const percent = preview.uploadProgress;
+            // SVG circular progress
+            circularProgress.innerHTML = `
+                <svg viewBox="0 0 36 36" class="circular-chart">
+                    <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                    <path class="circle" stroke-dasharray="${percent}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                    <text x="18" y="20.5" class="percentage">${percent}%</text>
+                </svg>
+            `;
+            item.appendChild(circularProgress);
+        }
+        
+        // Embedded badge
+        if (preview.embedded) {
+            const badge = document.createElement('div');
+            badge.className = 'upload-embedded-badge';
+            badge.textContent = 'RAG';
+            item.appendChild(badge);
+        }
+        
+        // Remove button (only show when not uploading or if upload is done)
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'upload-preview-remove';
+        removeBtn.innerHTML = '<i class="fas fa-times"></i>';
+        removeBtn.title = preview.uploadProgress < 100 ? 'Cancel upload' : (preview.embedded ? 'Remove (will also delete embeddings)' : 'Remove');
+        removeBtn.onclick = (e) => {
+            e.stopPropagation();
+            removeUploadPreview(preview.id);
+        };
+        item.appendChild(removeBtn);
+        
+        scroll.appendChild(item);
+    });
+}
+
+async function removeUploadPreview(id) {
+    const idx = uploadPreviews.findIndex(p => p.id === id);
+    if (idx === -1) return;
+    
+    const preview = uploadPreviews[idx];
+    
+    // Cancel upload if in progress
+    if (preview.xhr && preview.uploadProgress < 100) {
+        preview.xhr.abort();
+    }
+    
+    // If embedded, try to delete embeddings
+    if (preview.embedded && preview.path) {
+        try {
+            await fetch('/api/delete_file_embeddings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    chat_id: currentSessionId,
+                    filename: preview.filename
+                })
+            });
+        } catch (e) {
+            console.warn('Failed to delete embeddings:', e);
+        }
+    }
+    
+    // Delete file if uploaded
+    if (preview.path) {
+        try {
+            await fetch('/api/delete_uploaded_file', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: preview.path })
+            });
+        } catch (e) {
+            console.warn('Failed to delete file:', e);
+        }
+    }
+    
+    // Remove from legacy arrays
+    if (preview.isImage) {
+        const imgIdx = uploadedImages.findIndex(img => img.path === preview.path);
+        if (imgIdx > -1) uploadedImages.splice(imgIdx, 1);
+    } else {
+        const fileIdx = uploadedFiles.findIndex(f => f.path === preview.path);
+        if (fileIdx > -1) uploadedFiles.splice(fileIdx, 1);
+    }
+    
+    // Remove from previews
+    uploadPreviews.splice(idx, 1);
+    renderUploadPreviews();
+}
+
+function clearAllUploadPreviews() {
+    // Cancel all pending uploads
+    uploadPreviews.forEach(p => {
+        if (p.xhr && p.uploadProgress < 100) {
+            p.xhr.abort();
+        }
+    });
+    
+    uploadPreviews = [];
+    uploadedFiles = [];
+    uploadedImages = [];
+    renderUploadPreviews();
+}
+
+// ===============================================
+// END PASTE UPLOAD HANDLING
+// ===============================================
 
 async function switchModel(newModel) {
     try {
@@ -219,16 +780,20 @@ async function switchModel(newModel) {
         updateModelDisplay();
         savePreferences();  // Save the new model choice
         
+        // Check vision capability for new model
+        await checkVisionCapability();
+        
         console.log(`Switched to model: ${currentModel}`);
     } catch (error) {
         console.error('Error switching model:', error);
         currentModel = newModel; // Still switch even if stop fails
         updateModelDisplay();
+        await checkVisionCapability();
     }
 }
 
 // --- TAB SWITCHING ---
-function switchTab(tabId) {
+async function switchTab(tabId) {
     document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(el => el.classList.remove('active'));
     
@@ -246,22 +811,94 @@ function switchTab(tabId) {
         buttons[btnMap[tabId]].classList.add('active');
     }
     
-    // Reset model unload flags when entering VOX Core tab
+    // DYNAMIC VRAM MANAGEMENT
     if (tabId === 'vox-core') {
-        console.log('[VOX] Entering VOX Core tab, initializing models...');
+        console.log('[VOX] Entering VOX Core tab - dynamic VRAM management...');
+        
+        // 1. Stop any active chat model generation
+        if (isGenerating) {
+            console.log('[VOX] Stopping active chat generation...');
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+            await fetch('/api/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: currentModel })
+            }).catch(e => console.warn('[VOX] Stop failed:', e));
+            
+            isGenerating = false;
+            resetButtonsAfterInference();
+        }
+        
+        // 2. Unload chat model from VRAM to free space for VOX models
+        if (currentModel) {
+            console.log(`[VOX] Unloading chat model ${currentModel} to free VRAM...`);
+            await fetch('/api/unload_model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: currentModel })
+            }).catch(e => console.warn('[VOX] Unload failed:', e));
+            
+            updateModelDisplay();
+        }
+        
+        // 3. Reset VOX unload flags and initialize VOX models
         window.sttManuallyUnloaded = false;
         window.ttsManuallyUnloaded = false;
         
-        // Initialize VOX (loads STT+TTS) when entering VOX Core tab
+        // Initialize VOX (loads Whisper STT + TTS)
         if (typeof VOX !== 'undefined' && typeof VOX.init === 'function') {
             VOX.init().catch(err => {
                 console.error('[VOX] Initialization failed:', err);
             });
         }
+        
+        // Start interrupt monitoring
+        if (window.VOXInterrupt) {
+            window.VOXInterrupt.start();
+            console.log('[VOX] Interrupt monitoring started');
+        }
+        
+    } else if (tabId === 'chat') {
+        console.log('[CHAT] Entering Chat tab - dynamic VRAM management...');
+        
+        // Stop interrupt monitoring
+        if (window.VOXInterrupt) {
+            window.VOXInterrupt.stop();
+            console.log('[CHAT] Interrupt monitoring stopped');
+        }
+        
+        // Stop any VOX activity
+        if (typeof stopAllVOX === 'function') {
+            await stopAllVOX().catch(e => console.warn('[CHAT] VOX stop failed:', e));
+        }
+        
+        // Unload VOX models if NOT manually kept by user
+        if (!window.sttManuallyUnloaded && !window.ttsManuallyUnloaded) {
+            console.log('[CHAT] Auto-unloading VOX models to free VRAM...');
+            
+            // Unload Whisper STT
+            await fetch('/api/unload_stt', {
+                method: 'POST'
+            }).then(r => r.json())
+              .then(d => console.log('[CHAT] STT unload:', d.message))
+              .catch(e => console.warn('[CHAT] STT unload failed:', e));
+            
+            // Unload TTS models
+            await fetch('/api/unload_tts', {
+                method: 'POST'
+            }).then(r => r.json())
+              .then(d => console.log('[CHAT] TTS unload:', d.message))
+              .catch(e => console.warn('[CHAT] TTS unload failed:', e));
+        }
+        
+        // Reload chat model if needed
+        if (currentModel) {
+            console.log(`[CHAT] Reloading chat model ${currentModel}...`);
+            updateModelDisplay();
+        }
     }
-    
-    // VOX Core now uses new VOX module (vox.js) - no auto-start needed
-    // VOX.init() is called on page load in index.html
     
     // Close mobile sidebar when switching tabs
     closeMobileSidebar();
@@ -315,12 +952,89 @@ function closeChatList() {
     document.body.classList.remove('chat-list-open');
 }
 
+// --- FILE CONTEXT FOR LLM ---
+function buildFileContextForLLM() {
+    // Build a list of available files so LLM knows what the user has uploaded
+    // This helps the LLM understand which file the user is referring to
+    const context = {
+        files: [],
+        images: [],
+        embedded_files: [],  // Files embedded in RAG
+        total_count: 0
+    };
+    
+    uploadPreviews.forEach(preview => {
+        const fileInfo = {
+            filename: preview.filename,
+            type: preview.type,
+            embedded: preview.embedded
+        };
+        
+        if (preview.isImage) {
+            context.images.push(fileInfo);
+        } else if (preview.embedded) {
+            context.embedded_files.push(fileInfo);
+        } else {
+            context.files.push(fileInfo);
+        }
+    });
+    
+    context.total_count = context.files.length + context.images.length + context.embedded_files.length;
+    
+    return context;
+}
+
+// Check if any uploads are still in progress
+function hasUploadsInProgress() {
+    return uploadPreviews.some(p => p.uploadProgress >= 0 && p.uploadProgress < 100);
+}
+
+// Wait for all uploads to complete
+function waitForUploadsComplete() {
+    return new Promise((resolve) => {
+        const check = () => {
+            if (!hasUploadsInProgress()) {
+                resolve();
+            } else {
+                setTimeout(check, 100);
+            }
+        };
+        check();
+    });
+}
+
 // --- CHAT FUNCTIONS ---
 async function sendMessage() {
     const input = document.getElementById('chat-input');
-    const message = input.value.trim();
+        const message = input.value.trim(); 
+        if (!message || isGenerating) return;
+        // Check for uploads in progress
+        if (hasUploadsInProgress()) {
+            // Show indicator that we're waiting for uploads
+            const sendBtn = document.getElementById('send-btn');
+            sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+            sendBtn.disabled = true;
+            await waitForUploadsComplete();
+            // Restore button
+            sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+            sendBtn.disabled = false;
+        }
     
     if (!message || isGenerating) return;
+    
+    // Check for uploads in progress
+    if (hasUploadsInProgress()) {
+        // Show indicator that we're waiting for uploads
+        const sendBtn = document.getElementById('send-btn');
+        sendBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        sendBtn.disabled = true;
+        
+        await waitForUploadsComplete();
+        
+        // Restore button
+        sendBtn.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        sendBtn.disabled = false;
+    }
     
     isGenerating = true;
     input.value = '';
@@ -336,14 +1050,63 @@ async function sendMessage() {
     sendBtn.style.display = 'none';
     stopBtn.style.display = 'flex';
     
-    // Add user message to UI
-    appendMessage(message, 'user');
+    // Capture current attachments before clearing
+    const currentAttachments = {
+        files: [...uploadedFiles],
+        images: [...uploadedImages]
+    };
+    
+    // DEBUG: Check what's in attachments
+    console.log('[DEBUG] currentAttachments images:', currentAttachments.images?.length, 
+        currentAttachments.images?.map(i => ({
+            filename: i.filename, 
+            hasBase64: !!i.base64, 
+            b64Type: typeof i.base64,
+            b64Len: typeof i.base64 === 'string' ? i.base64.length : (Array.isArray(i.base64) ? i.base64.length + ' pages' : 'none')
+        }))
+    );
+    
+    // Add user message to UI with attachments
+    appendMessage(message, 'user', null, currentAttachments);
+    
+    // Clear upload previews after adding to message (they now show on the message)
+    uploadPreviews = [];
+    renderUploadPreviews();
     
     // Create bot placeholder
     const botMsgId = 'bot-' + Date.now();
     createBotPlaceholder(botMsgId);
     
+    // Build file context info for LLM to know what files are available
+    const fileContext = buildFileContextForLLM();
+    
     try {
+        // DEBUG: Log what we're sending
+        console.log('[SEND] uploadedImages count:', uploadedImages.length);
+        console.log('[SEND] uploadedFiles count:', uploadedFiles.length);
+        if (uploadedImages.length > 0) {
+            uploadedImages.forEach((img, idx) => {
+                const base64Info = Array.isArray(img.base64) 
+                    ? `${img.base64.length} pages` 
+                    : `${img.base64?.length || 0} chars`;
+                console.log(`[SEND] Image ${idx}:`, img.filename, 'base64:', base64Info, 'isPdf:', img.isPdf || false);
+            });
+        }
+        
+        // Build attachment metadata for saving in chat history (no base64, just info)
+        const attachmentsMeta = {
+            images: uploadedImages.map(img => ({
+                filename: img.filename,
+                isPdf: img.isPdf || false,
+                pages: img.pages || null
+            })),
+            files: uploadedFiles.map(f => ({
+                filename: f.filename,
+                file_type: f.file_type,
+                pages: f.pages || null
+            }))
+        };
+        
         const response = await fetch('/api/chat_stream', {
             method: 'POST',
             headers: {
@@ -356,7 +1119,10 @@ async function sendMessage() {
                 web_search: webSearchEnabled,
                 rag_enabled: document.getElementById('rag-enable')?.checked || false,
                 context_folder: document.getElementById('rag-folder')?.value || '',
-                uploaded_files: uploadedFiles
+                uploaded_files: uploadedFiles,
+                uploaded_images: uploadedImages,  // Include images for vision models
+                file_context: fileContext,  // File names/info for LLM context
+                attachments_meta: attachmentsMeta  // Metadata for saving in chat history
             }),
             signal: currentAbortController.signal // Add abort signal
         });
@@ -381,16 +1147,25 @@ async function sendMessage() {
                         if (data.session_id) {
                             const wasNewChat = !currentSessionId;
                             currentSessionId = data.session_id;
-                            // Refresh chat list immediately when new chat is created
+                            console.log('[CHAT] Session ID received:', data.session_id, 'wasNewChat:', wasNewChat);
+                            
+                            // For NEW chats: immediately refresh list so it appears
+                            // The chat is already saved with placeholder title by the backend
                             if (wasNewChat) {
-                                console.log('[CHAT] New session created, refreshing chat list');
-                                loadChatList();
+                                console.log('[CHAT] New chat - refreshing list immediately...');
+                                loadChatList().then(() => selectChatInList(data.session_id));
                             }
                         }
                         
-                        // Check if stream is done
+                        // Check if stream is done - this is when chat is DEFINITELY saved with final title
                         if (data.done) {
                             resetButtonsAfterInference();
+                            
+                            // Refresh chat list to show updated chat at top with proper title
+                            // Both new AND existing chats get refreshed here
+                            console.log('[CHAT] Stream done - final refresh...');
+                            await loadChatList();
+                            selectChatInList(currentSessionId);
                         }
                     } catch (e) {
                         console.error('Error parsing SSE data:', e);
@@ -399,8 +1174,12 @@ async function sendMessage() {
             }
         }
         
-        // Clear uploaded files after successful send
+        // Clear uploaded files and images after successful send
         uploadedFiles = [];
+        uploadedImages = [];
+        uploadPreviews = [];  // Clear the new unified previews
+        updateUploadedImagesDisplay();
+        renderUploadPreviews();
         
         // Ensure buttons reset even if done flag wasn't received
         resetButtonsAfterInference();
@@ -504,7 +1283,7 @@ function updateBotMessage(id, data) {
     }
     
     if (data.thinking) {
-        console.log('[THINKING] Received thinking data:', data.thinking.substring(0, 50));
+        // console.log('[THINKING] Received thinking data:', data.thinking.substring(0, 50));
         // Show thinking section
         thinkingSection.style.display = 'block';
         
@@ -534,36 +1313,23 @@ function updateBotMessage(id, data) {
             // Add auto-scroll behavior (only once)
             if (!thinkingContent._scrollSetup) {
                 thinkingContent._scrollSetup = true;
-                let autoScrollEnabled = true;
-                let userScrolling = false;
-                let scrollTimeout;
+                thinkingContent._autoScroll = true;  // Start with autoscroll enabled
                 
                 thinkingContent.addEventListener('scroll', () => {
-                    clearTimeout(scrollTimeout);
-                    userScrolling = true;
-                    
-                    const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 55;
-                    autoScrollEnabled = isNearBottom;
-                    
-                    scrollTimeout = setTimeout(() => {
-                        userScrolling = false;
-                    }, 150);
+                    // Check if user scrolled away from bottom
+                    const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 100;
+                    thinkingContent._autoScroll = isNearBottom;
                 });
-                
-                thinkingContent._autoScroll = true;
             }
         }
         
         thinkingText.textContent += data.thinking;
         
-        // Auto-scroll if enabled and not collapsed
-        if (!thinkingContent.classList.contains('collapsed')) {
-            const isNearBottom = thinkingContent.scrollHeight - thinkingContent.scrollTop - thinkingContent.clientHeight < 20;
-            if (thinkingContent._autoScroll !== false && isNearBottom) {
-                setTimeout(() => {
-                    thinkingContent.scrollTop = thinkingContent.scrollHeight;
-                }, 0);
-            }
+        // Auto-scroll thinking content - always scroll if autoscroll is enabled
+        if (thinkingContent._autoScroll !== false) {
+            requestAnimationFrame(() => {
+                thinkingContent.scrollTop = thinkingContent.scrollHeight;
+            });
         }
     }
     
@@ -782,7 +1548,149 @@ function renderMarkdown(element, text) {
     }
     
     try {
-        element.innerHTML = marked.parse(text);
+        // Normalize common LaTeX patterns so KaTeX auto-render can detect them.
+        // Wrap \begin{...}...\end{...} in display math and convert
+        // parenthesized fragments that contain backslash-commands into inline math.
+        function normalizeLatex(src) {
+            if (!src || typeof src !== 'string') return src;
+            let s = src;
+
+            // STEP 1: Protect existing LaTeX delimiters from markdown parser
+            // Store them in a map that we'll return
+            const protectedBlocks = [];
+            let blockIndex = 0;
+
+            // Protect $$...$$ display math blocks first (before single $)
+            s = s.replace(/\$\$([\s\S]*?)\$\$/g, (match) => {
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
+                protectedBlocks[blockIndex] = match;
+                blockIndex++;
+                return placeholder;
+            });
+
+            // Protect \[...\] display math blocks - convert to $$
+            s = s.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => {
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
+                protectedBlocks[blockIndex] = '$$' + inner + '$$';
+                blockIndex++;
+                return placeholder;
+            });
+
+            // Protect inline math $...$ (but be more careful - only if it looks like math)
+            s = s.replace(/\$([^\$\n]+?)\$/g, (match, inner) => {
+                // Only protect if it contains LaTeX commands or math symbols
+                if (/\\[a-zA-Z]+|[\^_{}]|\\[()[\]]/.test(inner)) {
+                    const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
+                    protectedBlocks[blockIndex] = match;
+                    blockIndex++;
+                    return placeholder;
+                }
+                return match;
+            });
+
+            // Protect \(...\) inline math blocks
+            s = s.replace(/\\\(([\s\S]*?)\\\)/g, (match) => {
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
+                protectedBlocks[blockIndex] = match;
+                blockIndex++;
+                return placeholder;
+            });
+
+            // STEP 2: Convert fenced code blocks labeled as math/latex into display math
+            s = s.replace(/```(?:math|latex)\n([\s\S]*?)\n```/g, (m, inner) => {
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
+                protectedBlocks[blockIndex] = '\n\n$$\n' + inner.trim() + '\n$$\n\n';
+                blockIndex++;
+                return placeholder;
+            });
+
+            // STEP 3: Wrap \begin{...}...\end{...} in $$...$$ if not already delimited
+            s = s.replace(/\\begin\{[\s\S]*?\\end\{[^}]+\}/g, (m) => {
+                // Check if already protected or delimited
+                if (m.includes('data-latex-block') || /\$\$/.test(m)) return m;
+                const placeholder = `<span data-latex-block="${blockIndex}"></span>`;
+                protectedBlocks[blockIndex] = '$$' + m + '$$';
+                blockIndex++;
+                return placeholder;
+            });
+
+            // Return both the normalized text and the protected blocks
+            return { text: s, protectedBlocks };
+        }
+
+        const { text: normalized, protectedBlocks } = normalizeLatex(text);
+        let html = marked.parse(normalized);
+
+        // Restore protected LaTeX blocks after markdown parsing
+        if (protectedBlocks && protectedBlocks.length > 0) {
+            protectedBlocks.forEach((block, index) => {
+                const spanPlaceholder = `<span data-latex-block="${index}"></span>`;
+                html = html.split(spanPlaceholder).join(block);
+            });
+        }
+
+        element.innerHTML = html;
+
+        // Post-process: some models emit math inside code blocks. KaTeX auto-render
+        // ignores code/pre tags. If a code block contains only math, unwrap it so
+        // renderMathInElement can process it. This keeps code blocks that are code intact.
+        (function unwrapMathCodeBlocks(root) {
+            try {
+                const pres = root.querySelectorAll('pre');
+                pres.forEach(pre => {
+                    const code = pre.querySelector('code');
+                    if (!code) return;
+                    const txt = code.textContent.trim();
+
+                    // Enhanced heuristics: detect LaTeX more accurately
+                    const hasLatexEnv = /\\begin\{[a-zA-Z*]+\}/.test(txt) || /\\end\{[a-zA-Z*]+\}/.test(txt);
+                    const hasLatexDelim = txt.includes('$$') || txt.includes('\\[') || txt.includes('\\]') ||
+                                         txt.includes('\\(') || txt.includes('\\)');
+                    const hasLatexCommands = /\\(?:frac|sqrt|sum|int|prod|lim|infty|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|omega|nabla|partial|cdot|times|div|pm|leq|geq|neq|approx|equiv|sin|cos|tan|log|ln|exp|matrix|begin|end|text|mathbb|mathcal|boldsymbol|vec|hat|bar|tilde|dot|left|right|big|Big|[a-zA-Z]+)\{?/.test(txt);
+                    const wrappedInMathDelim = /^\$\$[\s\S]+\$\$$/.test(txt) || /^\\\[[\s\S]+\\\]$/.test(txt) ||
+                                               /^\$[^\$]+\$$/.test(txt) || /^\\\([\s\S]+\\\)$/.test(txt);
+
+                    const looksLikeMath = hasLatexEnv || hasLatexDelim || hasLatexCommands || wrappedInMathDelim;
+
+                    // Additional check: if it contains typical code patterns, don't unwrap
+                    const looksLikeCode = /^(function|class|const|let|var|def|import|export|return|if|else|for|while)\s/.test(txt) ||
+                                         /[;{}()]\s*$/.test(txt) ||
+                                         txt.split('\n').length > 3 && /^[\s]+(function|const|let|var|if|for|while|def|class)/.test(txt);
+
+                    if (looksLikeMath && !looksLikeCode) {
+                        // Replace the <pre> with a div that contains the raw math text so KaTeX can find it
+                        const container = document.createElement('div');
+                        container.className = 'math-block-unwrapped';
+                        // Preserve spacing/newlines
+                        container.textContent = txt;
+                        pre.parentElement.replaceChild(container, pre);
+                    }
+                });
+
+                // Also check inline code spans that contain math delimiters and unwrap
+                const codes = root.querySelectorAll('code');
+                codes.forEach(code => {
+                    // Skip code inside pre (already handled)
+                    if (code.parentElement && code.parentElement.tagName.toLowerCase() === 'pre') return;
+                    const txt = code.textContent.trim();
+
+                    // Unwrap if it's clearly math delimited
+                    const isMathDelimited = (txt.startsWith('$$') && txt.endsWith('$$')) ||
+                                           (txt.startsWith('\\[') && txt.endsWith('\\]')) ||
+                                           (txt.startsWith('\\(') && txt.endsWith('\\)')) ||
+                                           (txt.startsWith('$') && txt.endsWith('$') && /\\[a-zA-Z]+/.test(txt));
+
+                    if (isMathDelimited) {
+                        const span = document.createElement('span');
+                        span.className = 'math-inline-unwrapped';
+                        span.textContent = txt;
+                        code.parentElement.replaceChild(span, code);
+                    }
+                });
+            } catch (e) {
+                console.warn('unwrapMathCodeBlocks error', e);
+            }
+        })(element);
         
         // Add copy buttons to code blocks
         element.querySelectorAll('pre code').forEach((block) => {
@@ -796,9 +1704,55 @@ function renderMarkdown(element, text) {
                 block.parentElement.insertBefore(button, block);
             }
         });
+        
+        // Render LaTeX math with KaTeX
+        renderLatex(element);
     } catch (e) {
         console.error('Error rendering markdown:', e);
         element.textContent = text;
+    }
+}
+
+/**
+ * Render LaTeX math expressions using KaTeX
+ * Supports: $inline$ and $$block$$ notation
+ */
+function renderLatex(element) {
+    if (typeof renderMathInElement === 'undefined') {
+        // KaTeX auto-render not loaded yet, try again later
+        setTimeout(() => {
+            if (typeof renderMathInElement !== 'undefined') {
+                renderLatex(element);
+            }
+        }, 100);
+        return;
+    }
+    
+    try {
+        renderMathInElement(element, {
+            // Process longer delimiters FIRST to avoid greedy matching issues
+            delimiters: [
+                {left: '$$', right: '$$', display: true},    // Block math (must come before single $)
+                {left: '\\[', right: '\\]', display: true},  // Block math alt
+                {left: '\\(', right: '\\)', display: false}, // Inline math alt
+                {left: '$', right: '$', display: false}      // Inline math (last to avoid conflicts)
+            ],
+            throwOnError: false,
+            errorColor: '#ff6b6b',
+            strict: false,
+            trust: true,
+            fleqn: false,
+            // Don't process inside code blocks (but our unwrapMathCodeBlocks handles math in code)
+            ignoredTags: ['script', 'noscript', 'style', 'textarea'],
+            ignoredClasses: ['no-latex'],
+            // Preprocess to handle edge cases
+            preProcess: (text) => {
+                // Remove any HTML entities that might break delimiters
+                return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+            }
+        });
+    } catch (e) {
+        console.warn('LaTeX rendering error:', e);
     }
 }
 
@@ -814,7 +1768,7 @@ function copyCode(button, codeBlock) {
     });
 }
 
-function appendMessage(text, type, modelName = null) {
+function appendMessage(text, type, modelName = null, attachments = null) {
     const chatWindow = document.getElementById('chat-window');
     const msgDiv = document.createElement('div');
     msgDiv.className = `msg ${type}`;
@@ -847,6 +1801,105 @@ function appendMessage(text, type, modelName = null) {
         if (contentDiv) {
             renderMarkdown(contentDiv, text);
         }
+    } else if (type === 'user') {
+        // User message with optional attachments
+        let attachmentsHtml = '';
+        
+        if (attachments && (attachments.files?.length > 0 || attachments.images?.length > 0)) {
+            attachmentsHtml = '<div class="message-attachments">';
+            
+            // Add images (but NOT PDFs - those go in files section)
+            if (attachments.images?.length > 0) {
+                for (const img of attachments.images) {
+                    // Check if this is a PDF (has isPdf flag or base64 is an array)
+                    const isPdf = img.isPdf || Array.isArray(img.base64);
+                    
+                    if (isPdf) {
+                        // PDF - show as file icon, not image
+                        const pages = img.pages || (Array.isArray(img.base64) ? img.base64.length : '?');
+                        // Use currentSessionId for viewing (it should be set by now, or will be set when chat starts)
+                        attachmentsHtml += `
+                            <div class="attachment-item attachment-pdf" title="Click to view PDF" onclick="openPdfViewer(currentSessionId, '${img.filename}')">
+                                <i class="fas fa-file-pdf"></i>
+                                <span class="attachment-name">${img.filename} (${pages} pages)</span>
+                            </div>
+                        `;
+                    } else if (img.base64 && typeof img.base64 === 'string') {
+                        // Regular image - show thumbnail
+                        const imgId = `attach-img-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+                        if (!window.attachedImagesMap) window.attachedImagesMap = {};
+                        window.attachedImagesMap[imgId] = img.base64;
+                        
+                        attachmentsHtml += `
+                            <div class="attachment-item attachment-image">
+                                <img id="${imgId}" 
+                                     src="data:image/png;base64,${img.base64}" 
+                                     alt="${img.filename}" 
+                                     title="Click to view: ${img.filename}"
+                                     onclick="showImageFromMap('${imgId}', '${img.filename}')">
+                                <span class="attachment-name">${img.filename}</span>
+                            </div>
+                        `;
+                    } else {
+                        // No base64, show placeholder
+                        attachmentsHtml += `
+                            <div class="attachment-item">
+                                <i class="fas fa-image"></i>
+                                <span class="attachment-name">${img.filename}</span>
+                            </div>
+                        `;
+                    }
+                }
+            }
+            
+            // Add files (PDFs, text, etc.) - but skip PDFs already shown from images
+            if (attachments.files?.length > 0) {
+                const pdfFilenames = (attachments.images || [])
+                    .filter(img => img.isPdf || Array.isArray(img.base64))
+                    .map(img => img.filename);
+                
+                for (const file of attachments.files) {
+                    // Skip if this PDF was already shown
+                    if (pdfFilenames.includes(file.filename)) continue;
+                    
+                    const isPdf = file.file_type === 'pdf';
+                    const icon = isPdf ? 'fa-file-pdf' : 
+                                 file.file_type === 'image_description' ? 'fa-image' : 'fa-file-code';
+                    const pages = file.pages ? ` (${file.pages} pages)` : '';
+                    
+                    // Store content for later viewing (for live uploads)
+                    const fileContentId = `filecontent-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+                    if (!window.uploadedFilesContentMap) window.uploadedFilesContentMap = {};
+                    if (file.content) {
+                        window.uploadedFilesContentMap[fileContentId] = file.content;
+                    }
+                    
+                    // Make clickable - use cached content if available, otherwise fetch from server
+                    if (isPdf) {
+                        // PDF - open PDF viewer
+                        attachmentsHtml += `
+                            <div class="attachment-item attachment-pdf" onclick="openPdfViewer(currentSessionId, '${file.filename}')" title="Click to view PDF">
+                                <i class="fas ${icon}"></i>
+                                <span class="attachment-name">${file.filename}${pages}</span>
+                            </div>
+                        `;
+                    } else {
+                        // Text file - open file viewer with cached content
+                        attachmentsHtml += `
+                            <div class="attachment-item attachment-file" onclick="openFileViewerCached('${fileContentId}', '${file.filename}')" title="Click to view file content">
+                                <i class="fas ${icon}"></i>
+                                <span class="attachment-name">${file.filename}${pages}</span>
+                            </div>
+                        `;
+                    }
+                }
+            }
+            
+            attachmentsHtml += '</div>';
+        }
+        
+        msgDiv.innerHTML = attachmentsHtml + `<div class="user-text">${escapeHtml(text)}</div>`;
+        chatWindow.appendChild(msgDiv);
     } else {
         msgDiv.textContent = text;
         chatWindow.appendChild(msgDiv);
@@ -855,6 +1908,372 @@ function appendMessage(text, type, modelName = null) {
     scrollToBottom();
     
     return msgId; // Return ID for later reference
+}
+
+// Helper to escape HTML in user messages
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Truncate filename for display
+function truncateFilename(filename, maxLen = 20) {
+    if (filename.length <= maxLen) return filename;
+    const ext = filename.split('.').pop();
+    const name = filename.slice(0, -(ext.length + 1));
+    const truncatedName = name.slice(0, maxLen - ext.length - 4) + '...';
+    return truncatedName + '.' + ext;
+}
+
+// Append user message with saved attachments from chat history
+function appendMessageWithSavedAttachments(text, attachments, chatId) {
+    const chatWindow = document.getElementById('chat-window');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg user';
+    
+    const msgId = `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    msgDiv.id = msgId;
+    
+    let attachmentsHtml = '<div class="message-attachments">';
+    
+    // Add images (including PDFs which are stored as images)
+    if (attachments.images?.length > 0) {
+        for (const img of attachments.images) {
+            if (img.isPdf) {
+                // PDF - show file icon with click to open viewer
+                const pages = img.pages ? ` (${img.pages} pages)` : '';
+                attachmentsHtml += `
+                    <div class="attachment-item attachment-pdf" onclick="openPdfViewer('${chatId}', '${img.filename}')" title="Click to view PDF">
+                        <i class="fas fa-file-pdf"></i>
+                        <span class="attachment-name">${truncateFilename(img.filename)}${pages}</span>
+                    </div>
+                `;
+            } else {
+                // Regular image - show thumbnail placeholder that loads lazily
+                const thumbId = `thumb-${msgId}-${Math.random().toString(36).substr(2, 5)}`;
+                attachmentsHtml += `
+                    <div class="attachment-item attachment-image" onclick="loadAndShowImage('${chatId}', '${img.filename}')" title="Click to view: ${img.filename}">
+                        <div class="attachment-thumb-lazy" id="${thumbId}" data-chat-id="${chatId}" data-filename="${img.filename}">
+                            <i class="fas fa-image"></i>
+                        </div>
+                        <span class="attachment-name">${truncateFilename(img.filename)}</span>
+                    </div>
+                `;
+            }
+        }
+    }
+    
+    // Add text files - make them clickable to view content
+    if (attachments.files?.length > 0) {
+        for (const file of attachments.files) {
+            // Skip PDFs (they're shown in images section if they have pages)
+            if (file.file_type === 'pdf') continue;
+            
+            const icon = file.file_type === 'image_description' ? 'fa-image' : 'fa-file-code';
+            const pages = file.pages ? ` (${file.pages} pages)` : '';
+            // Make file clickable to open content viewer
+            attachmentsHtml += `
+                <div class="attachment-item attachment-file" onclick="openFileViewer('${chatId}', '${file.filename}')" title="Click to view file content">
+                    <i class="fas ${icon}"></i>
+                    <span class="attachment-name">${truncateFilename(file.filename)}${pages}</span>
+                </div>
+            `;
+        }
+    }
+    
+    attachmentsHtml += '</div>';
+    
+    // Clean up the message content - remove the context prefixes that were added for the LLM
+    let cleanText = text;
+    // Remove "=== Available Files ===" section
+    cleanText = cleanText.replace(/\n*=== Available Files ===[\s\S]*?When the user refers to a specific file, use the content from that file\.\n*/g, '');
+    // Remove "[Attached: ...]" prefix
+    cleanText = cleanText.replace(/^\[Attached:[\s\S]*?\]\n*The following images are pages from the attached document\(s\)\. Please analyze them carefully to answer the user's question\.\n*/g, '');
+    cleanText = cleanText.replace(/^\[Attached:[\s\S]*?\]\n*/g, '');
+    // Remove "=== Uploaded Files Content ===" section
+    cleanText = cleanText.replace(/\n*=== Uploaded Files Content ===[\s\S]*?(?=\n\n|$)/g, '');
+    // Remove image descriptions section (for non-VL model reloads)
+    cleanText = cleanText.replace(/^\[The following images were described for you since you cannot see images directly\][\s\S]*?=== User Question ===\n*/g, '');
+    // Clean up any leading/trailing whitespace
+    cleanText = cleanText.trim();
+    
+    msgDiv.innerHTML = attachmentsHtml + `<div class="user-text">${escapeHtml(cleanText)}</div>`;
+    chatWindow.appendChild(msgDiv);
+    
+    // Lazy load thumbnails for images
+    setTimeout(() => lazyLoadThumbnails(msgDiv), 100);
+    
+    return msgId;
+}
+
+// Lazy load image thumbnails from server
+async function lazyLoadThumbnails(containerEl) {
+    const thumbs = containerEl.querySelectorAll('.attachment-thumb-lazy');
+    for (const thumb of thumbs) {
+        const chatId = thumb.dataset.chatId;
+        const filename = thumb.dataset.filename;
+        
+        try {
+            const response = await fetch(`/api/get_uploaded_file?chat_id=${encodeURIComponent(chatId)}&filename=${encodeURIComponent(filename)}&thumbnail=true`);
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                thumb.innerHTML = `<img src="${url}" alt="${filename}" style="max-width: 100%; max-height: 100%; object-fit: cover;">`;
+            }
+        } catch (e) {
+            console.warn('Could not load thumbnail:', filename);
+        }
+    }
+}
+
+// Load image from uploads folder and show fullscreen
+async function loadAndShowImage(chatId, filename) {
+    try {
+        const response = await fetch(`/api/get_uploaded_file?chat_id=${encodeURIComponent(chatId)}&filename=${encodeURIComponent(filename)}`);
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            showImageFullscreen(url, filename);
+        } else {
+            console.error('Failed to load image:', response.status);
+            alert('Could not load image. It may have been deleted.');
+        }
+    } catch (e) {
+        console.error('Error loading image:', e);
+        alert('Error loading image');
+    }
+}
+
+// Open PDF viewer modal
+async function openPdfViewer(chatId, filename) {
+    // Create or get modal
+    let modal = document.getElementById('pdf-viewer-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'pdf-viewer-modal';
+        modal.className = 'pdf-viewer-modal';
+        modal.innerHTML = `
+            <div class="pdf-viewer-content">
+                <div class="pdf-viewer-header">
+                    <span class="pdf-viewer-title"></span>
+                    <div class="pdf-viewer-actions">
+                        <a class="pdf-viewer-download" title="Open in new tab" target="_blank">
+                            <i class="fas fa-external-link-alt"></i>
+                        </a>
+                        <span class="pdf-viewer-close" onclick="closePdfViewer()">&times;</span>
+                    </div>
+                </div>
+                <div class="pdf-viewer-body">
+                    <div class="pdf-viewer-loading"><i class="fas fa-spinner fa-spin"></i> Loading PDF...</div>
+                    <object class="pdf-viewer-object" type="application/pdf" style="display:none;">
+                        <p>Your browser cannot display PDFs. <a class="pdf-fallback-link" target="_blank">Click here to download</a>.</p>
+                    </object>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Close on backdrop click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closePdfViewer();
+        });
+        
+        // Close on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && modal.style.display === 'flex') {
+                closePdfViewer();
+            }
+        });
+    }
+    
+    const title = modal.querySelector('.pdf-viewer-title');
+    const loading = modal.querySelector('.pdf-viewer-loading');
+    const pdfObject = modal.querySelector('.pdf-viewer-object');
+    const downloadLink = modal.querySelector('.pdf-viewer-download');
+    const fallbackLink = modal.querySelector('.pdf-fallback-link');
+    
+    // Build the URL
+    const url = `/api/get_uploaded_file?chat_id=${encodeURIComponent(chatId)}&filename=${encodeURIComponent(filename)}`;
+    
+    title.textContent = filename;
+    loading.style.display = 'flex';
+    pdfObject.style.display = 'none';
+    downloadLink.href = url;
+    fallbackLink.href = url;
+    modal.style.display = 'flex';
+    
+    // Set the PDF source
+    pdfObject.data = url;
+    
+    // Check if loaded after a short delay
+    setTimeout(() => {
+        loading.style.display = 'none';
+        pdfObject.style.display = 'block';
+    }, 500);
+}
+
+function closePdfViewer() {
+    const modal = document.getElementById('pdf-viewer-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        const pdfObject = modal.querySelector('.pdf-viewer-object');
+        if (pdfObject) pdfObject.data = '';
+    }
+}
+
+// ===============================================
+// FILE CONTENT VIEWER MODAL
+// ===============================================
+
+// Store current file content for copy functionality
+let currentFileContent = '';
+
+// Open file content viewer modal
+async function openFileViewer(chatId, filename, cachedContent = null) {
+    const modal = document.getElementById('file-viewer-modal');
+    if (!modal) return;
+    
+    const title = modal.querySelector('.file-viewer-title');
+    const loading = modal.querySelector('.file-viewer-loading');
+    const codeEl = modal.querySelector('.file-viewer-code');
+    
+    title.textContent = filename;
+    loading.style.display = 'flex';
+    codeEl.style.display = 'none';
+    codeEl.textContent = '';
+    currentFileContent = '';
+    modal.style.display = 'flex';
+    
+    // If we have cached content, use it
+    if (cachedContent) {
+        loading.style.display = 'none';
+        codeEl.style.display = 'block';
+        codeEl.textContent = cachedContent;
+        currentFileContent = cachedContent;
+        return;
+    }
+    
+    // Otherwise fetch from server
+    try {
+        const response = await fetch(`/api/get_uploaded_file?chat_id=${encodeURIComponent(chatId)}&filename=${encodeURIComponent(filename)}&as_text=true`);
+        
+        if (response.ok) {
+            const text = await response.text();
+            loading.style.display = 'none';
+            codeEl.style.display = 'block';
+            codeEl.textContent = text;
+            currentFileContent = text;
+        } else {
+            loading.style.display = 'none';
+            codeEl.style.display = 'block';
+            codeEl.textContent = `Error loading file: ${response.status}`;
+            currentFileContent = '';
+        }
+    } catch (e) {
+        loading.style.display = 'none';
+        codeEl.style.display = 'block';
+        codeEl.textContent = `Error loading file: ${e.message}`;
+        currentFileContent = '';
+    }
+}
+
+function closeFileViewer() {
+    const modal = document.getElementById('file-viewer-modal');
+    if (modal) {
+        modal.style.display = 'none';
+        currentFileContent = '';
+    }
+}
+
+// Open file viewer with cached content (for live uploads where content is in memory)
+function openFileViewerCached(contentId, filename) {
+    if (window.uploadedFilesContentMap && window.uploadedFilesContentMap[contentId]) {
+        openFileViewer(null, filename, window.uploadedFilesContentMap[contentId]);
+    } else {
+        // Fallback to fetching from server
+        openFileViewer(currentSessionId, filename);
+    }
+}
+
+function copyFileContent() {
+    if (currentFileContent) {
+        navigator.clipboard.writeText(currentFileContent).then(() => {
+            const btn = document.querySelector('.file-viewer-copy');
+            if (btn) {
+                const originalHtml = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+                btn.style.background = 'var(--secondary-color)';
+                btn.style.borderColor = 'var(--secondary-color)';
+                setTimeout(() => {
+                    btn.innerHTML = originalHtml;
+                    btn.style.background = '';
+                    btn.style.borderColor = '';
+                }, 2000);
+            }
+        });
+    }
+}
+
+// Close file viewer on Escape key and backdrop click
+document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            closeFileViewer();
+        }
+    });
+    
+    const modal = document.getElementById('file-viewer-modal');
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeFileViewer();
+        });
+    }
+});
+
+// Show image in fullscreen modal
+function showImageFullscreen(src, filename) {
+    // Create modal if doesn't exist
+    let modal = document.getElementById('image-fullscreen-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'image-fullscreen-modal';
+        modal.className = 'image-fullscreen-modal';
+        modal.innerHTML = `
+            <div class="image-fullscreen-content">
+                <span class="image-fullscreen-close" onclick="closeImageFullscreen()">&times;</span>
+                <img id="fullscreen-image" src="" alt="">
+                <div id="fullscreen-caption"></div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        
+        // Close on click outside
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeImageFullscreen();
+        });
+        
+        // Close on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeImageFullscreen();
+        });
+    }
+    
+    document.getElementById('fullscreen-image').src = src;
+    document.getElementById('fullscreen-caption').textContent = filename;
+    modal.style.display = 'flex';
+}
+
+// Show image from stored map (for large base64 images)
+function showImageFromMap(imgId, filename) {
+    if (window.attachedImagesMap && window.attachedImagesMap[imgId]) {
+        showImageFullscreen('data:image/png;base64,' + window.attachedImagesMap[imgId], filename);
+    }
+}
+
+function closeImageFullscreen() {
+    const modal = document.getElementById('image-fullscreen-modal');
+    if (modal) modal.style.display = 'none';
 }
 
 async function stopInference() {
@@ -1005,9 +2424,8 @@ async function loadChatList(query = '') {
         });
         
         chats.forEach(chat => {
-            console.log('[CHAT LIST] Creating item for:', chat.title);
-            
             const li = document.createElement('li');
+            li.dataset.chatId = chat.id;  // Store chat ID on the li element
             
             const titleSpan = document.createElement('span');
             titleSpan.textContent = chat.title;
@@ -1028,24 +2446,54 @@ async function loadChatList(query = '') {
             deleteIcon.style.cursor = 'pointer';
             deleteIcon.style.marginLeft = 'auto';
             deleteIcon.style.padding = '5px';
-            // Store data attributes for event delegation
             deleteIcon.dataset.chatId = chat.id;
             deleteIcon.dataset.chatTitle = chat.title;
-            
-            console.log('[CHAT LIST] Created delete icon with data:', deleteIcon);
             
             li.appendChild(titleSpan);
             li.appendChild(deleteIcon);
             
+            // Check if this is the current session
             if (chat.id === currentSessionId) {
                 li.classList.add('active');
+                console.log('[CHAT LIST] Marked active:', chat.id);
             }
             newList.appendChild(li);
         });
         
-        console.log('[CHAT LIST] Done rendering', chats.length, 'items with event delegation');
+        // Double-check: if currentSessionId is set but no item is active, find and activate it
+        if (currentSessionId && !newList.querySelector('li.active')) {
+            const targetLi = newList.querySelector(`li[data-chat-id="${currentSessionId}"]`);
+            if (targetLi) {
+                targetLi.classList.add('active');
+                console.log('[CHAT LIST] Force-activated:', currentSessionId);
+            } else {
+                console.log('[CHAT LIST] WARNING: currentSessionId not found in list:', currentSessionId);
+            }
+        }
+        
+        console.log('[CHAT LIST] Done rendering', chats.length, 'items');
     } catch (error) {
         console.error('Error loading chat list:', error);
+    }
+}
+
+// Helper function to select a chat in the list by ID
+function selectChatInList(chatId) {
+    const chatList = document.getElementById('chat-list');
+    if (!chatList) return;
+    
+    // Remove active class from all items
+    chatList.querySelectorAll('li.active').forEach(li => li.classList.remove('active'));
+    
+    // Add active class to the target chat
+    const targetLi = chatList.querySelector(`li[data-chat-id="${chatId}"]`);
+    if (targetLi) {
+        targetLi.classList.add('active');
+        // Scroll it into view if needed
+        targetLi.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        console.log('[CHAT LIST] Selected chat:', chatId);
+    } else {
+        console.log('[CHAT LIST] Could not find chat to select:', chatId);
     }
 }
 
@@ -1062,7 +2510,14 @@ async function loadSession(id) {
         chat.messages.forEach((msg, index) => {
             if (msg.role !== 'system') {
                 if (msg.role === 'user') {
-                    appendMessage(msg.content, 'user');
+                    // Check for saved attachments metadata
+                    const savedAttachments = msg._attachments;
+                    if (savedAttachments && (savedAttachments.images?.length > 0 || savedAttachments.files?.length > 0)) {
+                        // Render with attachments from history
+                        appendMessageWithSavedAttachments(msg.content, savedAttachments, id);
+                    } else {
+                        appendMessage(msg.content, 'user');
+                    }
                 } else if (msg.role === 'assistant') {
                     // Skip assistant messages that are ONLY unexecuted tool call JSON text
                     if (msg.content && msg.content.trim().match(/^\{"name":\s*"potatool_\w+"/)) {
@@ -1111,55 +2566,98 @@ async function loadSession(id) {
                       </div>
                       <div class="thinking-content collapsed" id="${msgId}-thinking-content">`;
                     
-                    // Add thinking text if exists
-                    if (hasThinking) {
-                        thinkingSectionHTML += `<div class="thinking-text">${msg._thinking}</div>`;
-                    }
+                    // Helper function to render a single tool call
+                    const renderToolCall = (toolCall, idx) => {
+                        const toolName = toolCall.function.name;
+                        const toolArgs = toolCall.function.arguments;
+                        const toolResult = toolCall.function.result;
+                        const toolId = `tool-${msgId}-${idx}`;
+                        
+                        let argsDisplay = '';
+                        try {
+                            const argsObj = typeof toolArgs === 'string' ? JSON.parse(toolArgs) : toolArgs;
+                            argsDisplay = Object.entries(argsObj)
+                                .map(([key, value]) => `<div class="tool-detail-line"><strong>${key}:</strong> ${value}</div>`)
+                                .join('');
+                        } catch (e) {
+                            argsDisplay = `<pre class="tool-args-pre">${typeof toolArgs === 'string' ? toolArgs : JSON.stringify(toolArgs, null, 2)}</pre>`;
+                        }
+                        
+                        let resultDisplay = '';
+                        if (toolResult) {
+                            const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult, null, 2);
+                            resultDisplay = `
+                                <div class="tool-detail-line"><strong>Result:</strong></div>
+                                <pre class="tool-result-pre">${resultStr}</pre>
+                            `;
+                        }
+                        
+                        return `
+                        <div class="tool-call-container" data-tool-id="${toolId}" style="cursor: pointer;">
+                            <div class="tool-status-line">
+                                <span class="tool-toggle" id="${toolId}-toggle">
+                                    <i class="fas fa-chevron-right"></i>
+                                </span>
+                                <span class="tool-message">🔧 ${toolName.replace('potatool_', '').replace(/_/g, ' ')}</span>
+                            </div>
+                            <div class="tool-detail-section collapsed" id="${toolId}-detail">
+                                <div class="tool-detail-line"><strong>Function:</strong> ${toolName}</div>
+                                ${argsDisplay}
+                                ${resultDisplay}
+                            </div>
+                        </div>`;
+                    };
                     
-                    // Add tool calls with full parameters (field: value format)
-                    if (hasToolCalls) {
+                    // Parse thinking text for [[TOOL_CALL:n]] markers to interleave tool calls chronologically
+                    if (hasThinking && hasToolCalls) {
+                        // Split by tool call markers - pattern: [[TOOL_CALL:0]], [[TOOL_CALL:1]], etc.
+                        const toolCallPattern = /\[\[TOOL_CALL:(\d+)\]\]/g;
+                        const thinkingText = msg._thinking;
+                        
+                        // Find all markers and their positions
+                        let lastIndex = 0;
+                        let match;
+                        const usedToolIndices = new Set();
+                        
+                        while ((match = toolCallPattern.exec(thinkingText)) !== null) {
+                            // Add thinking text before this marker
+                            const textBefore = thinkingText.substring(lastIndex, match.index).trim();
+                            if (textBefore) {
+                                thinkingSectionHTML += `<div class="thinking-text">${textBefore}</div>`;
+                            }
+                            
+                            // Add the corresponding tool call
+                            const toolIndex = parseInt(match[1], 10);
+                            if (toolIndex < allToolCalls.length) {
+                                thinkingSectionHTML += renderToolCall(allToolCalls[toolIndex], toolIndex);
+                                usedToolIndices.add(toolIndex);
+                            }
+                            
+                            lastIndex = match.index + match[0].length;
+                        }
+                        
+                        // Add any remaining thinking text after the last marker
+                        const remainingText = thinkingText.substring(lastIndex).trim();
+                        if (remainingText) {
+                            thinkingSectionHTML += `<div class="thinking-text">${remainingText}</div>`;
+                        }
+                        
+                        // Add any tool calls that weren't referenced by markers (fallback)
                         allToolCalls.forEach((toolCall, idx) => {
-                            const toolName = toolCall.function.name;
-                            const toolArgs = toolCall.function.arguments;
-                            const toolResult = toolCall.function.result;  // Get saved result
-                            const toolId = `tool-${msgId}-${idx}`;
-                            
-                            // Parse arguments for pretty display (field: value)
-                            let argsDisplay = '';
-                            try {
-                                const argsObj = typeof toolArgs === 'string' ? JSON.parse(toolArgs) : toolArgs;
-                                argsDisplay = Object.entries(argsObj)
-                                    .map(([key, value]) => `<div class="tool-detail-line"><strong>${key}:</strong> ${value}</div>`)
-                                    .join('');
-                            } catch (e) {
-                                // Fallback to JSON string if parsing fails
-                                argsDisplay = `<pre class="tool-args-pre">${typeof toolArgs === 'string' ? toolArgs : JSON.stringify(toolArgs, null, 2)}</pre>`;
+                            if (!usedToolIndices.has(idx)) {
+                                thinkingSectionHTML += renderToolCall(toolCall, idx);
                             }
-                            
-                            // Format result if exists
-                            let resultDisplay = '';
-                            if (toolResult) {
-                                const resultStr = typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult, null, 2);
-                                resultDisplay = `
-                                    <div class="tool-detail-line"><strong>Result:</strong></div>
-                                    <pre class="tool-result-pre">${resultStr}</pre>
-                                `;
-                            }
-                            
-                            thinkingSectionHTML += `
-                            <div class="tool-call-container" data-tool-id="${toolId}" style="cursor: pointer;">
-                                <div class="tool-status-line">
-                                    <span class="tool-toggle" id="${toolId}-toggle">
-                                        <i class="fas fa-chevron-right"></i>
-                                    </span>
-                                    <span class="tool-message">🔧 ${toolName.replace('potatool_', '').replace(/_/g, ' ')}</span>
-                                </div>
-                                <div class="tool-detail-section collapsed" id="${toolId}-detail">
-                                    <div class="tool-detail-line"><strong>Function:</strong> ${toolName}</div>
-                                    ${argsDisplay}
-                                    ${resultDisplay}
-                                </div>
-                            </div>`;
+                        });
+                    } else if (hasThinking) {
+                        // No tool calls, just add thinking text (strip any orphaned markers)
+                        const cleanThinking = msg._thinking.replace(/\[\[TOOL_CALL:\d+\]\]/g, '').trim();
+                        if (cleanThinking) {
+                            thinkingSectionHTML += `<div class="thinking-text">${cleanThinking}</div>`;
+                        }
+                    } else if (hasToolCalls) {
+                        // No thinking text, just add tool calls
+                        allToolCalls.forEach((toolCall, idx) => {
+                            thinkingSectionHTML += renderToolCall(toolCall, idx);
                         });
                     }
                     
@@ -1205,7 +2703,9 @@ async function loadSession(id) {
             }
         });
         
-        loadChatList();
+        // Refresh chat list and select this chat
+        await loadChatList();
+        selectChatInList(id);
     } catch (error) {
         console.error('Error loading session:', error);
     }
@@ -1215,10 +2715,16 @@ function startNewChat() {
     currentSessionId = null;
     document.getElementById('chat-window').innerHTML = '';
     uploadedFiles = [];
+    uploadedImages = [];  // Clear uploaded images too
+    uploadPreviews = [];  // Clear upload previews
     
     // Remove active class from all chat items
     const chatItems = document.querySelectorAll('#chat-list li');
     chatItems.forEach(item => item.classList.remove('active'));
+    
+    // Update image count display and preview
+    updateUploadedImagesDisplay();
+    renderUploadPreviews();
     
     // Reload chat list to reflect no active session
     loadChatList();
@@ -1229,20 +2735,135 @@ async function uploadFile(input) {
     if (input.files.length === 0) return;
     
     const file = input.files[0];
+    const filename = file.name.toLowerCase();
+    const isImage = /\.(png|jpg|jpeg|gif|bmp|webp|avif|heic|heif)$/i.test(filename);
+    
+    // If it's an image, use the image upload handler
+    if (isImage) {
+        await uploadImageFile(file);
+        return;
+    }
+    
+    // Regular file upload to chat-specific directory
+    // Generate UUID for new chats
+    if (!currentSessionId) {
+        currentSessionId = crypto.randomUUID();
+        console.log('[UPLOAD] Generated new session ID:', currentSessionId);
+    }
+    
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('chat_id', currentSessionId);
+    formData.append('model', currentModel);
     
     try {
-        const response = await fetch('/api/upload', {
+        appendMessage(`Uploading file: ${file.name}...`, 'system');
+        
+        const response = await fetch('/api/upload_chat_file', {
             method: 'POST',
             body: formData
         });
         
         const data = await response.json();
-        uploadedFiles.push(data);
-        appendMessage(`File uploaded: ${data.filename}`, 'system');
+        
+        if (data.success) {
+            uploadedFiles.push({
+                filename: data.filename,
+                path: data.path,
+                content: data.content,
+                file_type: data.file_type
+            });
+            
+            let msg = `✓ File uploaded: ${data.filename}`;
+            if (data.file_type === 'pdf') {
+                msg += ` (${data.pages || 0} pages)`;
+            }
+            appendMessage(msg, 'system');
+        } else {
+            appendMessage(`Error uploading file: ${data.error || 'Unknown error'}`, 'system');
+        }
     } catch (error) {
         console.error('Error uploading file:', error);
+        appendMessage('Error uploading file', 'system');
+    }
+}
+
+async function uploadImageFile(fileOrInput) {
+    // Handle both input elements and direct file objects
+    let file;
+    if (fileOrInput instanceof HTMLInputElement) {
+        if (fileOrInput.files.length === 0) return;
+        file = fileOrInput.files[0];
+    } else if (fileOrInput instanceof File) {
+        file = fileOrInput;
+    } else {
+        console.error('uploadImageFile: Invalid argument');
+        return;
+    }
+    
+    // Check if we can process images
+    if (!canProcessImages) {
+        appendMessage('Cannot upload images - no vision model available. Install llava:7b or similar via Ollama.', 'system');
+        return;
+    }
+    
+    // Generate UUID for new chats
+    if (!currentSessionId) {
+        currentSessionId = crypto.randomUUID();
+        console.log('[UPLOAD] Generated new session ID:', currentSessionId);
+    }
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('chat_id', currentSessionId);
+    formData.append('model', currentModel);
+    
+    try {
+        appendMessage(`Uploading image: ${file.name}...`, 'system');
+        
+        const response = await fetch('/api/upload_chat_file', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const data = await response.json();
+        
+        if (data.error === 'vision_required') {
+            appendMessage(`⚠️ ${data.message}`, 'system');
+            return;
+        }
+        
+        if (data.success) {
+            let msg = `✓ Image uploaded: ${data.filename}`;
+            
+            if (data.is_vl_model && data.image_base64) {
+                // VL model - store base64 for Ollama's images array
+                uploadedImages.push({
+                    filename: data.filename,
+                    base64: data.image_base64,
+                    is_vl_model: true
+                });
+                msg += ' (ready for vision model)';
+            } else if (data.content) {
+                // Non-VL model - image was described, treat as file
+                uploadedFiles.push({
+                    filename: data.filename,
+                    content: data.content,
+                    file_type: 'image_description'
+                });
+                msg += ` (described by ${data.fallback_model || 'fallback model'})`;
+            }
+            
+            appendMessage(msg, 'system');
+            
+            // Update count display
+            updateUploadedImagesDisplay();
+        } else {
+            appendMessage(`Error uploading image: ${data.error || 'Unknown error'}`, 'system');
+        }
+    } catch (error) {
+        console.error('Error uploading image:', error);
+        appendMessage('Error uploading image', 'system');
     }
 }
 
@@ -1479,13 +3100,14 @@ async function unloadSTT() {
 
 async function unloadTTS() {
     try {
-        const response = await fetch('/api/tts_unload', { method: 'POST' });
+        console.log('[TTS] Unloading TTS models...');
+        const response = await fetch('/api/unload_tts', { method: 'POST' });
         const data = await response.json();
         
         if (data.success) {
             ttsManuallyUnloaded = true;
             window.ttsManuallyUnloaded = true;  // Expose globally
-            console.log('[TTS] TTS model unloaded');
+            console.log('[TTS] TTS model unloaded:', data.message);
             
             const btn = document.getElementById('unload-tts-btn');
             if (btn) {
@@ -1494,6 +3116,8 @@ async function unloadTTS() {
                     btn.innerHTML = '<i class="fas fa-volume-high"></i> Unload TTS';
                 }, 2000);
             }
+        } else {
+            console.error('[TTS] Unload failed:', data.error);
         }
     } catch (error) {
         console.error('[TTS] Error unloading TTS:', error);
@@ -1726,6 +3350,7 @@ async function loadSettings() {
         if (settings.bools) {
             stealthMode = settings.bools.STEALTH_MODE || false;
             updateToggleState('stealth-toggle', stealthMode);
+            pasteUploadsUseRag = settings.bools.PASTE_UPLOADS_USE_RAG || false;
         }
         
         renderSettingsTab(currentSettingsTab);
@@ -1847,6 +3472,8 @@ function getSettingDescription(key) {
         'SUMMARIZATION_OLLAMA_MODEL': 'Model used for summarization tasks',
         'RELEVANCE_OLLAMA_MODEL': 'Model used for determining relevance during RAG',
         'EMBEDDING_OLLAMA_MODEL': 'Model used for generating text embeddings for local vector database',
+        'BACKUP_VISION_MODEL': 'Backup model for processing images when current model lacks vision capability (e.g., llava:7b)',
+        'DEFAULT_OCR_MODEL': 'Default model for OCR and image text extraction (e.g., llava:7b)',
         'CHATTERBOX_TTS_MODEL_PATH': '(?) Path to custom TTS model for chatterbox mode',
         
         // API Endpoints
@@ -1897,7 +3524,8 @@ function getSettingDescription(key) {
         'ENABLE_DEVICE_CONTROL': 'Enable device control functionalities',
         'ENABLE_LOGS': 'Enable logging of interactions and events for debugging and analysis',
         'ENABLE_ALWAYS_HITL': 'Enable Always Human-in-the-Loop mode for continuous human oversight',
-        'IDIOT_MODE': 'Enable idiot mode for simplified interactions and reduced complexity'
+        'IDIOT_MODE': 'Enable idiot mode for simplified interactions and reduced complexity',
+        'PASTE_UPLOADS_USE_RAG': 'When enabled, pasted/uploaded files are embedded to vector DB for RAG. When disabled, files are sent directly to the model as context.'
     };
     
     return fallbackDescriptions[key] || '(?) No description available';
@@ -2217,6 +3845,12 @@ function toggleRightSidebar() {
     
     sidebar.classList.toggle('open');
     
+    // Load embedded files when opening
+    if (!isOpen) {
+        loadEmbeddedFiles();
+        checkWeaviateStatus();
+    }
+    
     // On mobile, add/remove overlay
     if (window.innerWidth <= 768) {
         let overlay = document.getElementById('rag-overlay');
@@ -2243,42 +3877,322 @@ function toggleRightSidebar() {
     }
 }
 
-// --- RAG FOLDER SELECTION ---
-let ragFolderFiles = [];
-let ragImageFiles = [];
+// === RAG PANEL STATE ===
+let ragPendingFiles = [];  // {file, type: 'document'|'image', name}
 
-// Handle folder selection
-document.addEventListener('DOMContentLoaded', () => {
-    const folderInput = document.getElementById('rag-folder-input');
-    const imageInput = document.getElementById('rag-image-input');
+// === RAG STATUS CHECK ===
+async function checkWeaviateStatus() {
+    const statusEl = document.getElementById('rag-weaviate-status');
+    if (!statusEl) return;
     
-    if (folderInput) {
-        folderInput.addEventListener('change', (e) => {
-            ragFolderFiles = Array.from(e.target.files);
-            const display = document.getElementById('rag-folder-display');
-            if (ragFolderFiles.length > 0) {
-                // Get folder name from first file's path
-                const firstPath = ragFolderFiles[0].webkitRelativePath || ragFolderFiles[0].name;
-                const folderName = firstPath.split('/')[0];
-                display.value = `${folderName} (${ragFolderFiles.length} files)`;
-                console.log(`Selected folder with ${ragFolderFiles.length} files`);
-            } else {
-                display.value = 'No folder selected';
-            }
-        });
+    try {
+        const response = await fetch('/api/rag_status');
+        const data = await response.json();
+        
+        if (data.weaviate?.status === 'connected') {
+            statusEl.innerHTML = '<i class="fas fa-circle"></i> <span>Weaviate Connected</span>';
+            statusEl.className = 'rag-status-indicator connected';
+        } else {
+            statusEl.innerHTML = '<i class="fas fa-circle"></i> <span>Weaviate Disconnected - Start Docker container</span>';
+            statusEl.className = 'rag-status-indicator disconnected';
+        }
+    } catch (e) {
+        statusEl.innerHTML = '<i class="fas fa-circle"></i> <span>Weaviate Error</span>';
+        statusEl.className = 'rag-status-indicator disconnected';
+    }
+}
+
+// === LOAD EMBEDDED FILES FOR CURRENT CHAT ===
+async function loadEmbeddedFiles() {
+    const listEl = document.getElementById('embedded-files-list');
+    if (!listEl) return;
+    
+    if (!currentSessionId) {
+        listEl.innerHTML = '<div class="embedded-files-empty">Start a chat to embed files</div>';
+        return;
     }
     
-    if (imageInput) {
-        imageInput.addEventListener('change', (e) => {
-            ragImageFiles = Array.from(e.target.files);
-            const countSpan = document.getElementById('rag-image-count');
-            if (countSpan) {
-                countSpan.textContent = `${ragImageFiles.length} images`;
-            }
-            console.log(`Selected ${ragImageFiles.length} images for RAG`);
+    try {
+        const response = await fetch(`/api/rag_files/${currentSessionId}`);
+        const data = await response.json();
+        
+        if (data.files && data.files.length > 0) {
+            listEl.innerHTML = data.files.map(file => {
+                const icon = getFileIconClass(file.content_type);
+                return `
+                    <div class="embedded-file-item">
+                        <div class="embedded-file-info">
+                            <i class="fas ${icon}"></i>
+                            <span class="filename" title="${file.filename}">${truncateFilename(file.filename, 25)}</span>
+                            <span class="chunk-count">(${file.chunk_count} chunks)</span>
+                        </div>
+                        <button class="embedded-file-delete" onclick="deleteEmbeddedFile('${file.filename}')" title="Delete embeddings">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            listEl.innerHTML = '<div class="embedded-files-empty">No files embedded for this chat</div>';
+        }
+    } catch (e) {
+        listEl.innerHTML = '<div class="embedded-files-empty">Error loading embedded files</div>';
+        console.error('Error loading embedded files:', e);
+    }
+}
+
+function getFileIconClass(contentType) {
+    switch (contentType) {
+        case 'image_ocr':
+        case 'image':
+            return 'fa-image';
+        case 'pdf':
+            return 'fa-file-pdf';
+        default:
+            return 'fa-file-alt';
+    }
+}
+
+// === DELETE EMBEDDED FILE ===
+async function deleteEmbeddedFile(filename) {
+    if (!confirm(`Delete embeddings for "${filename}"?`)) return;
+    
+    const statusLog = document.getElementById('rag-status');
+    statusLog.textContent = `Deleting embeddings for ${filename}...`;
+    
+    try {
+        const response = await fetch('/api/delete_file_embeddings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                chat_id: currentSessionId,
+                filename: filename
+            })
         });
+        
+        const data = await response.json();
+        if (data.success) {
+            statusLog.textContent = `✓ Deleted embeddings for ${filename}`;
+            loadEmbeddedFiles();  // Refresh list
+        } else {
+            statusLog.textContent = `✗ Error: ${data.error || 'Unknown error'}`;
+        }
+    } catch (e) {
+        statusLog.textContent = `✗ Error: ${e.message}`;
+    }
+}
+
+// === FILE SELECTION HANDLERS ===
+function handleRagFolderSelect(input) {
+    const files = Array.from(input.files);
+    const validFiles = files.filter(f => isValidRagFile(f.name));
+    
+    validFiles.forEach(file => {
+        ragPendingFiles.push({
+            file: file,
+            type: isImageFile(file.name) ? 'image' : 'document',
+            name: file.webkitRelativePath || file.name
+        });
+    });
+    
+    updateRagPendingUI();
+    input.value = '';  // Reset input
+}
+
+function handleRagFileSelect(input) {
+    const files = Array.from(input.files);
+    
+    files.forEach(file => {
+        ragPendingFiles.push({
+            file: file,
+            type: 'document',
+            name: file.name
+        });
+    });
+    
+    updateRagPendingUI();
+    input.value = '';
+}
+
+function handleRagImageSelect(input) {
+    const files = Array.from(input.files);
+    
+    files.forEach(file => {
+        ragPendingFiles.push({
+            file: file,
+            type: 'image',
+            name: file.name
+        });
+    });
+    
+    updateRagPendingUI();
+    input.value = '';
+}
+
+function isValidRagFile(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    const validExtensions = [
+        // Documents
+        'pdf', 'txt', 'md', 'csv', 'tsv',
+        // Config
+        'json', 'yaml', 'yml', 'xml', 'env', 'ini', 'toml', 'conf', 'cfg',
+        // Web
+        'html', 'htm', 'css', 'scss', 'sass', 'less',
+        // JS/TS
+        'js', 'ts', 'jsx', 'tsx', 'mjs', 'cjs',
+        // Python
+        'py', 'pyw', 'pyi',
+        // C/C++
+        'c', 'h', 'cpp', 'hpp', 'cc', 'cxx', 'hxx',
+        // Other languages
+        'java', 'kt', 'scala', 'go', 'rs', 'rb', 'php', 'pl', 'pm',
+        'swift', 'm', 'mm', 'r', 'lua', 'sh', 'bash', 'zsh',
+        'bat', 'cmd', 'ps1', 'psm1',
+        // Data
+        'sql', 'graphql', 'proto',
+        // Misc
+        'log', 'rst', 'tex', 'dockerfile', 'gitignore', 'editorconfig',
+        // Images
+        'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif'
+    ];
+    return validExtensions.includes(ext);
+}
+
+function isImageFile(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif'].includes(ext);
+}
+
+// === UPDATE PENDING FILES UI ===
+function updateRagPendingUI() {
+    const container = document.getElementById('rag-pending-container');
+    const listEl = document.getElementById('rag-pending-list');
+    const embedBtn = document.getElementById('rag-embed-btn');
+    
+    // Update counts
+    const folderCount = ragPendingFiles.filter(f => f.type === 'document').length;
+    const imageCount = ragPendingFiles.filter(f => f.type === 'image').length;
+    
+    document.getElementById('rag-folder-count').textContent = `${folderCount} files`;
+    document.getElementById('rag-file-count').textContent = `${folderCount} files`;
+    document.getElementById('rag-image-count').textContent = `${imageCount} images`;
+    
+    // Update pending list
+    if (ragPendingFiles.length > 0) {
+        container.style.display = 'block';
+        listEl.innerHTML = ragPendingFiles.map((item, idx) => {
+            const icon = item.type === 'image' ? 'fa-image' : 'fa-file-alt';
+            return `
+                <div class="rag-pending-item">
+                    <span><i class="fas ${icon}"></i> ${truncateFilename(item.name, 30)}</span>
+                    <button class="rag-pending-remove" onclick="removeRagPending(${idx})">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+            `;
+        }).join('');
+        embedBtn.disabled = false;
+    } else {
+        container.style.display = 'none';
+        embedBtn.disabled = true;
+    }
+}
+
+function removeRagPending(idx) {
+    ragPendingFiles.splice(idx, 1);
+    updateRagPendingUI();
+}
+
+// === EMBED FILES TO VECTOR DB ===
+async function embedRagFiles() {
+    if (ragPendingFiles.length === 0) {
+        alert('Please select files first');
+        return;
+    }
+    
+    if (!currentSessionId) {
+        // Generate session ID if none exists
+        currentSessionId = crypto.randomUUID();
+        console.log('[RAG] Generated new session ID:', currentSessionId);
+    }
+    
+    const statusLog = document.getElementById('rag-status');
+    const embedBtn = document.getElementById('rag-embed-btn');
+    const pdfVisualCheckbox = document.getElementById('rag-pdf-visual');
+    const pdfVisualEnabled = pdfVisualCheckbox?.checked || false;
+    
+    embedBtn.disabled = true;
+    embedBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Embedding...';
+    statusLog.textContent = 'Preparing files for embedding...\n';
+    
+    try {
+        const formData = new FormData();
+        formData.append('chat_id', currentSessionId);
+        formData.append('pdf_visual_analysis', pdfVisualEnabled ? 'true' : 'false');
+        
+        // Separate documents and images
+        const documents = ragPendingFiles.filter(f => f.type === 'document');
+        const images = ragPendingFiles.filter(f => f.type === 'image');
+        
+        for (const item of documents) {
+            formData.append('files', item.file, item.name);
+        }
+        
+        for (const item of images) {
+            formData.append('images', item.file, item.name);
+        }
+        
+        statusLog.textContent += `Uploading ${documents.length} documents and ${images.length} images...\n`;
+        if (pdfVisualEnabled) {
+            statusLog.textContent += `PDF visual analysis ENABLED (using llava for graphs/images)\n`;
+        }
+        
+        const response = await fetch('/api/embed_to_rag', {
+            method: 'POST',
+            body: formData
+        });
+        
+        const result = await response.json();
+        
+        if (result.status === 'success') {
+            statusLog.textContent += `✓ Embedded ${result.embedded_count} items\n`;
+            statusLog.textContent += `Collection: ${result.collection_name}\n`;
+            
+            // Clear pending files
+            ragPendingFiles = [];
+            updateRagPendingUI();
+            
+            // Refresh embedded files list
+            loadEmbeddedFiles();
+        } else {
+            statusLog.textContent += `✗ Error: ${result.error}\n`;
+        }
+    } catch (error) {
+        statusLog.textContent += `✗ Error: ${error.message}\n`;
+        console.error('RAG embedding error:', error);
+    }
+    
+    embedBtn.disabled = ragPendingFiles.length === 0;
+    embedBtn.innerHTML = '<i class="fas fa-database"></i> Embed to Vector DB';
+}
+
+// === SAVE RAG PREFERENCE ===
+function saveRagPreference() {
+    const enabled = document.getElementById('rag-enable')?.checked || false;
+    localStorage.setItem('ragEnabled', enabled);
+}
+
+// Load RAG preference on init
+document.addEventListener('DOMContentLoaded', () => {
+    const ragCheckbox = document.getElementById('rag-enable');
+    if (ragCheckbox) {
+        ragCheckbox.checked = localStorage.getItem('ragEnabled') === 'true';
     }
 });
+
+// Keep old functions for backwards compatibility
+let ragFolderFiles = [];
+let ragImageFiles = [];
 
 function selectRagFolder() {
     // Trigger the hidden file input
@@ -2288,6 +4202,11 @@ function selectRagFolder() {
 async function embedFolderContents() {
     if (ragFolderFiles.length === 0 && ragImageFiles.length === 0) {
         alert('Please select a folder or images first');
+        return;
+    }
+    
+    if (!currentSessionId) {
+        alert('Please start a chat first before embedding to RAG');
         return;
     }
     
@@ -2310,8 +4229,10 @@ async function embedFolderContents() {
         const embedModel = document.getElementById('rag-embed-model').value;
         formData.append('embed_model', embedModel);
         formData.append('vision_model', currentModel); // Use current chat model for vision
+        formData.append('chat_id', currentSessionId); // Include chat ID for namespacing
         
         statusLog.textContent += `Uploading ${ragFolderFiles.length} files and ${ragImageFiles.length} images...\n`;
+        statusLog.textContent += `Chat ID: ${currentSessionId}\n`;
         
         const response = await fetch('/api/embed_to_rag', {
             method: 'POST',
@@ -2323,6 +4244,12 @@ async function embedFolderContents() {
         if (result.status === 'success') {
             statusLog.textContent += `✓ Embedded ${result.embedded_count} items to vector DB\n`;
             statusLog.textContent += `Collection: ${result.collection_name}\n`;
+            
+            // Clear the selected files after successful embedding
+            ragFolderFiles = [];
+            ragImageFiles = [];
+            document.getElementById('rag-folder-display').value = '';
+            document.getElementById('rag-image-count').textContent = '0 images';
         } else {
             statusLog.textContent += `✗ Error: ${result.error}\n`;
         }
@@ -2336,22 +4263,36 @@ function searchRagIndex() {
     const query = prompt('Enter search query:');
     if (!query) return;
     
+    if (!currentSessionId) {
+        alert('Please start a chat first before searching RAG');
+        return;
+    }
+    
     const statusLog = document.getElementById('rag-status');
     statusLog.textContent = `Searching vector DB for: ${query}...\n`;
+    statusLog.textContent += `Chat ID: ${currentSessionId}\n`;
     
-    // TODO: Implement actual search API call
     fetch('/api/search_rag', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, top_k: 5 })
+        body: JSON.stringify({ 
+            query, 
+            top_k: 5,
+            chat_id: currentSessionId  // Include chat ID for namespaced search
+        })
     })
     .then(res => res.json())
     .then(result => {
-        if (result.results) {
+        if (result.results && result.results.length > 0) {
             statusLog.textContent += `Found ${result.results.length} results:\n`;
             result.results.forEach((r, i) => {
-                statusLog.textContent += `${i+1}. ${r.content.substring(0, 100)}... (score: ${r.score.toFixed(3)})\n`;
+                const preview = r.content.substring(0, 100).replace(/\n/g, ' ');
+                statusLog.textContent += `${i+1}. ${preview}... (score: ${r.score.toFixed(3)})\n`;
             });
+        } else if (result.results && result.results.length === 0) {
+            statusLog.textContent += `No results found. The RAG collection may be empty for this chat.\n`;
+        } else if (result.error) {
+            statusLog.textContent += `✗ Error: ${result.error}\n`;
         }
     })
     .catch(err => {

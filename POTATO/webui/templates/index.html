@@ -2,13 +2,33 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>P.O.T.A.T.O // Interface</title>
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" />
+    
+    <!-- iOS PWA Meta Tags -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="P.O.T.A.T.O" />
+    <link rel="apple-touch-icon" href="{{ url_for('static', filename='icon-192.png') }}" />
+    
+    <!-- Theme Color -->
+    <meta name="theme-color" content="#00ff00" />
+    
+    <link rel="stylesheet" href="{{ url_for('static', filename='fontloader.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
     <link rel="shortcut icon" href="{{ url_for('static', filename='favicon.ico') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='cdn/highlight/atom-one-dark.min.css') }}" />
+    <!-- KaTeX for LaTeX math rendering -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='cdn/katex/katex.min.css') }}" crossorigin="anonymous">
+    <script defer src="{{ url_for('static', filename='cdn/katex/katex.min.js') }}" crossorigin="anonymous"></script>
+    <script defer src="{{ url_for('static', filename='cdn/katex/auto-render.min.js') }}" crossorigin="anonymous"></script>
+    
     <script src="{{ url_for('static', filename='cdn/fontawesome/all.min.js') }}"></script>
+    <!-- MD -->
     <script src="{{ url_for('static', filename='cdn/marked/marked.min.js') }}"></script>
     <script src="{{ url_for('static', filename='cdn/highlight/highlight.min.js') }}"></script>
   </head>
@@ -131,10 +151,31 @@
               <div class="chat-window" id="chat-window"></div>
 
               <div class="input-area-container">
+                <!-- Vision capability banners (hidden by default) -->
+                <div id="vision-warning-banner" class="vision-warning-banner" style="display: none;">
+                  <i class="fas fa-exclamation-triangle"></i>
+                  <span>No vision model available. Image processing is disabled.</span>
+                  <button class="close-banner" onclick="this.parentElement.style.display='none'">&times;</button>
+                </div>
+                <div id="vision-info-banner" class="vision-info-banner" style="display: none;">
+                  <i class="fas fa-info-circle"></i>
+                  <span>Current model doesn't support images. Using backup vision model for image processing.</span>
+                  <button class="close-banner" onclick="this.parentElement.style.display='none'">&times;</button>
+                </div>
+                
+                <!-- Uploaded files/images preview - horizontal scrollable -->
+                <div id="upload-preview-container" class="upload-preview-container" style="display: none;">
+                  <div id="upload-preview-scroll" class="upload-preview-scroll"></div>
+                </div>
+                
                 <div class="input-widgets">
-                  <label class="widget-icon" title="Upload File">
+                  <label class="widget-icon" id="file-upload-widget" title="Upload File">
                     <i class="fas fa-paperclip"></i>
                     <input type="file" id="file-upload" style="display:none;" onchange="uploadFile(this)" />
+                  </label>
+                  <label class="widget-icon" id="image-upload-widget" title="Upload Image">
+                    <i class="fas fa-image"></i>
+                    <input type="file" id="image-upload" accept="image/*" style="display:none;" onchange="uploadImageFile(this)" />
                   </label>
                   <label class="widget-icon" title="Upload Folder">
                     <i class="fas fa-folder"></i>
@@ -253,13 +294,16 @@
                 <button class="vox-btn vox-btn-primary" id="vox-record-btn" onclick="if (typeof VOX !== 'undefined') { if (document.getElementById('vox-record-btn').classList.contains('recording')) { VOX.stopRecording(); } else { VOX.startRecording(); } }">
                   <i class="fas fa-microphone"></i> Start Recording
                 </button>
-                <button class="vox-btn vox-btn-danger" id="vox-stop-speak-btn" onclick="if (typeof VOX !== 'undefined') VOX.stopSpeaking()">
+                <button class="vox-btn vox-btn-danger" id="vox-stop-all-btn" onclick="if (typeof stopAllVOX !== 'undefined') stopAllVOX()" title="Emergency stop - stops everything">
+                  <i class="fas fa-hand"></i> STOP ALL
+                </button>
+                <button class="vox-btn vox-btn-warning" id="vox-stop-speak-btn" onclick="if (typeof VOX !== 'undefined') VOX.stopSpeaking()">
                   <i class="fas fa-volume-mute"></i> Stop Speaking
                 </button>
-                <button class="vox-btn vox-btn-warning" onclick="unloadSTT()" id="unload-stt-btn">
+                <button class="vox-btn vox-btn-warning" onclick="unloadSTT()" id="unload-stt-btn" title="Unload Speech-to-Text model from VRAM">
                   <i class="fas fa-ear-listen"></i> Unload STT
                 </button>
-                <button class="vox-btn vox-btn-warning" onclick="unloadTTS()" id="unload-tts-btn">
+                <button class="vox-btn vox-btn-warning" onclick="unloadTTS()" id="unload-tts-btn" title="Unload Text-to-Speech model from VRAM">
                   <i class="fas fa-volume-high"></i> Unload TTS
                 </button>
                 <button class="vox-btn vox-btn-secondary" onclick="if (typeof VOX !== 'undefined') VOX.clearChat()">
@@ -273,7 +317,7 @@
                   <li><strong>Click "Start Recording"</strong> and speak your question</li>
                   <li><strong>Click "Stop Recording"</strong> or let it auto-detect silence</li>
                   <li><strong>Continuous Mode:</strong> Auto-restarts listening after each response</li>
-                  <li><strong>Interrupt Words:</strong> Say 'okay thanks', 'alright stop', 'okay enough', 'thank you', 'bye', 'done' or 'shut up' to interrupt</li>
+                  <li><strong>Interrupt Words:</strong> Say 'okay thanks', 'alright stop', 'okay enough' or 'shut up' to interrupt</li>
                 </ul>
               </div>
             </div>
@@ -340,60 +384,116 @@
         </div>
         
         <div class="rag-content">
+          <!-- Weaviate Status -->
+          <div class="rag-status-indicator" id="rag-weaviate-status">
+            <i class="fas fa-circle"></i> <span>Checking Weaviate...</span>
+          </div>
+
+          <!-- Embedded Files for Current Chat -->
           <div class="control-group">
-            <label>RAG Context (Embed to Vector DB)</label>
-            <div class="file-input-wrapper">
-              <input type="text" id="rag-folder-display" placeholder="No folder selected" readonly />
-              <input type="file" id="rag-folder-input" webkitdirectory directory multiple hidden />
-              <button class="action-btn" onclick="document.getElementById('rag-folder-input').click()">
-                <i class="fas fa-folder-open"></i> Select Folder
-              </button>
+            <label><i class="fas fa-database"></i> Embedded Files (This Chat)</label>
+            <div class="embedded-files-list" id="embedded-files-list">
+              <div class="embedded-files-empty">No files embedded yet</div>
             </div>
-            <small style="color: #888; display: block; margin-top: 5px;">
-              RAG: Embeds files to Weaviate vector DB for semantic search
-            </small>
           </div>
 
+          <hr class="rag-divider">
+
+          <!-- Add Documents Section -->
           <div class="control-group">
-            <label>RAG Image Input (Vision Models)</label>
-            <div class="file-input-wrapper">
-              <input type="file" id="rag-image-input" accept="image/*" multiple hidden />
-              <button class="action-btn" onclick="document.getElementById('rag-image-input').click()">
-                <i class="fas fa-image"></i> Select Images
+            <label><i class="fas fa-plus-circle"></i> Add Documents to RAG</label>
+            
+            <!-- Folder Input -->
+            <div class="rag-input-row">
+              <input type="file" id="rag-folder-input" webkitdirectory directory multiple hidden onchange="handleRagFolderSelect(this)" />
+              <button class="action-btn rag-btn" onclick="document.getElementById('rag-folder-input').click()">
+                <i class="fas fa-folder-open"></i> Folder
               </button>
-              <span id="rag-image-count" style="color: #888; margin-left: 10px;">0 images</span>
+              <span id="rag-folder-count" class="rag-count">0 files</span>
             </div>
-            <small style="color: #888; display: block; margin-top: 5px;">
-              For vision models only - embeds image features to vector DB
-            </small>
+            
+            <!-- File Input (PDFs, text files) -->
+            <div class="rag-input-row">
+              <input type="file" id="rag-file-input" accept=".pdf,.txt,.md,.csv,.json,.env,.py,.js,.ts,.html,.css,.xml,.yaml,.yml" multiple hidden onchange="handleRagFileSelect(this)" />
+              <button class="action-btn rag-btn" onclick="document.getElementById('rag-file-input').click()">
+                <i class="fas fa-file-alt"></i> Files
+              </button>
+              <span id="rag-file-count" class="rag-count">0 files</span>
+            </div>
+            
+            <!-- Image Input -->
+            <div class="rag-input-row">
+              <input type="file" id="rag-image-input" accept="image/*" multiple hidden onchange="handleRagImageSelect(this)" />
+              <button class="action-btn rag-btn" onclick="document.getElementById('rag-image-input').click()">
+                <i class="fas fa-image"></i> Images
+              </button>
+              <span id="rag-image-count" class="rag-count">0 images</span>
+            </div>
+            
+            <small class="rag-hint">Images will be described by vision model before embedding</small>
           </div>
-
-          <div class="control-group">
-            <label>Embedding Model</label>
-            <select id="rag-embed-model">
-              <option value="nomic-embed-text:latest">nomic-embed-text:latest</option>
-            </select>
-          </div>
-
+          
+          <!-- PDF Visual Analysis Option -->
           <div class="control-group">
             <label>
-              <input type="checkbox" id="rag-enable" /> Enable RAG for Chat
+              <input type="checkbox" id="rag-pdf-visual" /> 
+              <i class="fas fa-eye"></i> Describe PDF pages visually
             </label>
+            <small class="rag-hint">Slower but extracts graphs, charts, and images. Uses llava model.</small>
+          </div>
+          
+          <!-- Pending Files Preview -->
+          <div class="control-group" id="rag-pending-container" style="display: none;">
+            <label><i class="fas fa-list"></i> Pending Files</label>
+            <div class="rag-pending-list" id="rag-pending-list"></div>
           </div>
 
-          <button class="action-btn" onclick="embedFolderContents()">
-            <i class="fas fa-database"></i> Embed Folder
+          <!-- Embed Button -->
+          <button class="action-btn action-btn-primary" id="rag-embed-btn" onclick="embedRagFiles()" disabled>
+            <i class="fas fa-database"></i> Embed to Vector DB
           </button>
 
+          <hr class="rag-divider">
+
+          <!-- RAG Settings -->
+          <div class="control-group">
+            <label>
+              <input type="checkbox" id="rag-enable" onchange="saveRagPreference()" /> 
+              <i class="fas fa-toggle-on"></i> Enable RAG for Chat
+            </label>
+            <small class="rag-hint">When enabled, relevant documents will be included in AI context</small>
+          </div>
+
+          <!-- Search Index -->
           <button class="action-btn" onclick="searchRagIndex()">
             <i class="fas fa-search"></i> Search Index
           </button>
 
+          <!-- Status Log -->
           <div class="status-log" id="rag-status">
             Ready to index documents...
           </div>
         </div>
       </aside>
+    </div>
+
+    <!-- File Content Viewer Modal -->
+    <div id="file-viewer-modal" class="file-viewer-modal" style="display: none;">
+      <div class="file-viewer-content">
+        <div class="file-viewer-header">
+          <span class="file-viewer-title"></span>
+          <div class="file-viewer-actions">
+            <button class="file-viewer-copy" title="Copy to clipboard" onclick="copyFileContent()">
+              <i class="fas fa-copy"></i>
+            </button>
+            <span class="file-viewer-close" onclick="closeFileViewer()">&times;</span>
+          </div>
+        </div>
+        <div class="file-viewer-body">
+          <div class="file-viewer-loading"><i class="fas fa-spinner fa-spin"></i> Loading...</div>
+          <pre class="file-viewer-code" style="display:none;"></pre>
+        </div>
+      </div>
     </div>
 
     <!-- Voice Recording Overlay -->
@@ -441,6 +541,7 @@
     </div>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script src="{{ url_for('static', filename='vox-interrupt.js') }}"></script>
     <script src="{{ url_for('static', filename='vox.js') }}"></script>
     <script>
       // VOX models will load only when VOX Core tab is opened

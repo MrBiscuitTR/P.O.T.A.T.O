@@ -5,4 +5,11 @@
     "requires_stealth_mode": false,
     "description": "Web search and content extraction via MCP SearXNG server"
   }
+  ,
+  "rag_fetch.md": {
+    "tools": ["potatool_rag_fetch"],
+    "requires_web_search": false,
+    "requires_stealth_mode": false,
+    "description": "On-demand retrieval of relevant document snippets from the vector DB (Weaviate)"
+  }
 }

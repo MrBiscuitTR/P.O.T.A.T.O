@@ -171,7 +171,7 @@ mcp_tools_schema = [
     }
 ]
 
-def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, stealth_mode=False, custom_system_prompt=""):
+def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, stealth_mode=False, custom_system_prompt="", images=None):
     """
     Generator that handles the LLM Stream + Tool execution loop with thinking detection.
     
@@ -181,10 +181,18 @@ def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, steal
         enable_search: Whether web search tools are available
         stealth_mode: Whether to operate in stealth mode (affects tool selection)
         custom_system_prompt: Optional custom system prompt to prepend to all system context
+        images: Optional list of base64-encoded images to include with the last user message
     """
     # Auto-detect tags if this is first time using model
+    # This runs BEFORE the actual chat so we have correct tag info
     if needs_tag_detection(model):
-        auto_detect_model_tags(model)
+        print(f"[MODEL] First time using {model} - running tag detection...")
+        try:
+            auto_detect_model_tags(model)
+            print(f"[MODEL] Tag detection complete for {model}")
+        except Exception as e:
+            print(f"[MODEL] Tag detection failed for {model}: {e} - using safe defaults")
+            # Don't crash, just use safe defaults (no tag parsing)
     
     # Get model-specific thinking tags
     thinking_tags = get_model_thinking_tags(model)
@@ -202,6 +210,15 @@ def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, steal
     # 1. Build system context with current settings
     # Prepend custom system prompt if provided
     custom_prompt_prefix = f"{custom_system_prompt}\n\n---\n\n" if custom_system_prompt else ""
+
+    math_instructions = """
+    [MATHS INSTRUCTIONS]
+    When you include mathematical expressions, always use LaTeX delimiters:
+- Inline math: $...$
+- Display math: $$...$$
+Do NOT put math inside code blocks (```...```) or escape dollar signs. Use \\( \\) or \\[ \\] only if dollar signs must be avoided.
+Keep expressions as raw LaTeX so the UI can render them."""
+
     web_search_instructions = """You have access to web search tools via Ollama's native tool calling system.
 
 **AVAILABLE TOOLS:**
@@ -237,6 +254,7 @@ def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, steal
     
     settings_context = f"""
 {custom_prompt_prefix}
+{math_instructions}
 [CURRENT SYSTEM SETTINGS]
 - Web Search: {'ENABLED' if enable_search else 'DISABLED'}
 - Stealth Mode: {'ENABLED' if stealth_mode else 'DISABLED'}
@@ -277,6 +295,17 @@ ALWAYS consider the full conversation history when determining what to search fo
             print(f"[MCP] Failed to start client: {e}")
             # Continue without tools if MCP fails
             active_tools = None
+    
+    # Add images to the last user message if provided
+    if images and len(images) > 0:
+        # Find last user message and add images to it
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get('role') == 'user':
+                messages[i]['images'] = images
+                print(f"[VISION] Added {len(images)} images to user message at index {i}")
+                print(f"[VISION] Image data types: {[type(img).__name__ for img in images]}")
+                print(f"[VISION] Image sizes: {[len(img) if isinstance(img, str) else 'bytes' for img in images]}")
+                break
     
     # 2. Start Chat
     stream = ollama.chat(
@@ -796,13 +825,14 @@ def get_model_thinking_capability(model_name):
 def get_model_thinking_tags(model_name):
     """
     Get model-specific thinking tags. Returns dict with 'open' and 'close' tags.
-    Defaults to <think></think> if not detected.
+    Defaults to empty tags (no parsing) for safety - better to show all content
+    than to incorrectly split it.
     """
     model_info = load_model_info()
     if model_name in model_info and 'thinking_tags' in model_info[model_name]:
         return model_info[model_name]['thinking_tags']
-    # Default tags
-    return {'open': '<think>', 'close': '</think>'}
+    # Default: no tags (safe - all content goes to response)
+    return {'open': '', 'close': ''}
 
 def needs_tag_detection(model_name):
     """
