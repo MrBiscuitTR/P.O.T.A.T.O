@@ -3187,6 +3187,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 8px;
+  justify-content: space-between;
 }
 
 .vox-setting-row label {
@@ -3273,6 +3274,10 @@ html, body {
 .vox-chat-selector select option {
   padding: 8px;
   cursor: pointer;
+  overflow-wrap: break-word;
+  overflow-x: auto;
+  text-overflow: ellipsis;
+  max-width: 90%;
 }
 
 .vox-chat-selector select option:hover {
@@ -3432,7 +3437,7 @@ html, body {
   }
   
   .vox-chat-selector {
-    width: 100%;
+    width: 88%;
   }
   
   .vox-chat-window {
