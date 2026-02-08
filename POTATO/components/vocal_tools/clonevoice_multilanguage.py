@@ -216,6 +216,56 @@ def speak(text: str, language: str = "en"):
         except Exception as e:
             print(f"Error in generation/playback: {type(e).__name__}: {str(e)}")
 
+def generate_tts_wav_multilingual(text: str, language: str = "en") -> bytes:
+    """Generate TTS audio and return as WAV bytes for browser playback."""
+    import io
+    from scipy.io import wavfile
+
+    text = text.strip()
+    if not text:
+        return b""
+
+    lang = language.lower().strip()
+    if lang not in SUPPORTED_LANGUAGES and lang != "en":
+        lang = "en"
+
+    model = _get_english_model() if lang == "en" else _get_multilingual_model()
+    lang_id = None if lang == "en" else lang
+    sample_rate = int(model.sr)
+    sentences = split_sentences(text)
+
+    chunks = []
+    for sentence in sentences:
+        if not sentence.strip():
+            continue
+        try:
+            with torch.no_grad(), \
+                 torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else torch.no_grad():
+                wav = model.generate(
+                    text=sentence,
+                    language_id=lang_id,
+                    audio_prompt_path=str(REFERENCE_PATH) if REFERENCE_PATH else None,
+                    temperature=TEMPERATURE,
+                    exaggeration=EXAGGERATION,
+                )
+            wav_np = wav.squeeze().cpu().float().numpy()
+            max_abs_val = np.max(np.abs(wav_np))
+            if max_abs_val > 1.0:
+                wav_np /= max_abs_val
+            chunks.append(wav_np)
+        except Exception as e:
+            print(f"[TTS] Error generating sentence: {e}")
+            continue
+
+    if not chunks:
+        return b""
+
+    audio = np.concatenate(chunks)
+    audio_int16 = (audio * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    wavfile.write(buf, sample_rate, audio_int16)
+    return buf.getvalue()
+
 # Interactive mode
 if __name__ == "__main__":
     print("Chatterbox TTS – Offline real-time (English + Multilingual)")

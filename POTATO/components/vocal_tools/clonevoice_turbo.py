@@ -292,6 +292,47 @@ def speak_sentences_grouped(text: str):
     finally:
         # Clear speaking flag when done (even if error)
         _is_speaking = False
+
+def generate_tts_wav(text: str) -> bytes:
+    """Generate TTS audio and return as WAV bytes (for browser playback)."""
+    import io
+    import numpy as np
+    from scipy.io import wavfile
+
+    model = _get_model()
+    sample_rate = int(model.sr)
+    groups = split_sentences(text)
+
+    chunks = []
+    for sentence in groups:
+        if not sentence.strip():
+            continue
+        try:
+            ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else torch.no_grad()
+            with ctx:
+                wav = model.generate(
+                    text=sentence,
+                    audio_prompt_path=str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None,
+                    exaggeration=0.8,
+                    cfg_weight=0.5
+                )
+            wav = wav.squeeze()
+            if wav.abs().max() > 1:
+                wav = wav / wav.abs().max()
+            chunks.append(wav.cpu().float().numpy())
+        except Exception as e:
+            print(f"[TTS] Error generating sentence: {e}")
+            continue
+
+    if not chunks:
+        return b""
+
+    audio = np.concatenate(chunks)
+    audio_int16 = (audio * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    wavfile.write(buf, sample_rate, audio_int16)
+    return buf.getvalue()
+
 # =========================
 # Control functions
 # =========================

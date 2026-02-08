@@ -245,23 +245,28 @@
                 </select>
               </div>
 
-              <div class="vox-setting">
-                <label>Audio Device:</label>
-                <select id="vox-device-select" onchange="setAudioDevice(this.value, this.options[this.selectedIndex].text)">
-                  <option>Loading...</option>
-                </select>
+              <div class="vox-setting-group">
+                <div class="vox-setting vox-setting-row">
+                  <label>Input:</label>
+                  <select id="vox-device-select" onchange="setAudioDevice(this.value, this.options[this.selectedIndex].text)">
+                    <option value="">Default microphone</option>
+                  </select>
+                </div>
+                <div class="vox-setting vox-setting-row">
+                  <label>Output:</label>
+                  <select id="vox-output-device-select" onchange="setOutputDevice(this.value, this.options[this.selectedIndex].text)">
+                    <option value="">Default speaker</option>
+                  </select>
+                </div>
               </div>
 
-              <div class="vox-setting">
-                <label>
-                  <input type="checkbox" id="vox-continuous"> Continuous Mode
-                </label>
-              </div>
-
-              <div class="vox-setting">
-                <label>
-                  <input type="checkbox" id="vox-auto-silence" checked> Auto-detect Silence
-                </label>
+              <div class="vox-setting-group">
+                <div class="vox-setting">
+                  <label><input type="checkbox" id="vox-continuous"> Continuous Mode</label>
+                </div>
+                <div class="vox-setting">
+                  <label><input type="checkbox" id="vox-auto-silence" checked> Auto-detect Silence</label>
+                </div>
               </div>
             </div>
 

@@ -3176,6 +3176,34 @@ html, body {
   font-family: var(--font-main);
 }
 
+/* Grouped stacked settings (device selectors, checkboxes) */
+.vox-setting-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vox-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.vox-setting-row label {
+  min-width: 44px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+#vox-device-select,
+#vox-output-device-select {
+  width: 160px;
+  min-width: 160px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .vox-chat-selector {
   display: flex;
   flex-direction: column;

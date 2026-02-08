@@ -60,6 +60,13 @@ if (typeof marked !== 'undefined') {
 }
 
 // Initialize on page load
+// On page unload/reload: fire-and-forget unload of VOX models
+window.addEventListener('beforeunload', () => {
+    navigator.sendBeacon('/api/unload_stt');
+    navigator.sendBeacon('/api/unload_tts');
+    navigator.sendBeacon('/api/stop_all_vox');
+});
+
 document.addEventListener('DOMContentLoaded', () => {
     loadPreferences();  // Load saved preferences first
     loadModels();
@@ -861,41 +868,17 @@ async function switchTab(tabId) {
         }
         
     } else if (tabId === 'chat') {
-        console.log('[CHAT] Entering Chat tab - dynamic VRAM management...');
-        
         // Stop interrupt monitoring
         if (window.VOXInterrupt) {
             window.VOXInterrupt.stop();
-            console.log('[CHAT] Interrupt monitoring stopped');
         }
-        
-        // Stop any VOX activity
-        if (typeof stopAllVOX === 'function') {
-            await stopAllVOX().catch(e => console.warn('[CHAT] VOX stop failed:', e));
+
+        // Full teardown: stop all ops + unload STT/TTS/speech LLM
+        if (typeof teardownVOX === 'function') {
+            await teardownVOX().catch(e => console.warn('[CHAT] VOX teardown failed:', e));
         }
-        
-        // Unload VOX models if NOT manually kept by user
-        if (!window.sttManuallyUnloaded && !window.ttsManuallyUnloaded) {
-            console.log('[CHAT] Auto-unloading VOX models to free VRAM...');
-            
-            // Unload Whisper STT
-            await fetch('/api/unload_stt', {
-                method: 'POST'
-            }).then(r => r.json())
-              .then(d => console.log('[CHAT] STT unload:', d.message))
-              .catch(e => console.warn('[CHAT] STT unload failed:', e));
-            
-            // Unload TTS models
-            await fetch('/api/unload_tts', {
-                method: 'POST'
-            }).then(r => r.json())
-              .then(d => console.log('[CHAT] TTS unload:', d.message))
-              .catch(e => console.warn('[CHAT] TTS unload failed:', e));
-        }
-        
-        // Reload chat model if needed
+
         if (currentModel) {
-            console.log(`[CHAT] Reloading chat model ${currentModel}...`);
             updateModelDisplay();
         }
     }
@@ -1555,6 +1538,33 @@ function renderMarkdown(element, text) {
             if (!src || typeof src !== 'string') return src;
             let s = src;
 
+            // STEP 0: Shield code blocks so LaTeX patterns never touch their content.
+            // math/latex labeled fenced blocks are left alone here so STEP 2 can convert them.
+            const codeBlocks = [];
+            let codeIdx = 0;
+            // Completed fenced code blocks (``` ... ```) - skip math/latex labeled ones
+            s = s.replace(/(`{3,})(?!math\b|latex\b)([\s\S]*?)\1/g, (match) => {
+                const key = `\x00CODE${codeIdx}\x00`;
+                codeBlocks[codeIdx] = match;
+                codeIdx++;
+                return key;
+            });
+            // Unclosed fenced code block (streaming: opening ``` without closing ```)
+            // Only match if the fence starts at the beginning of a line
+            s = s.replace(/(^|\n)(`{3,})(?!math\b|latex\b)([\s\S]*)$/, (match) => {
+                const key = `\x00CODE${codeIdx}\x00`;
+                codeBlocks[codeIdx] = match;
+                codeIdx++;
+                return key;
+            });
+            // Inline code (`...`)
+            s = s.replace(/(`[^`\n]+`)/g, (match) => {
+                const key = `\x00CODE${codeIdx}\x00`;
+                codeBlocks[codeIdx] = match;
+                codeIdx++;
+                return key;
+            });
+
             // STEP 1: Protect existing LaTeX delimiters from markdown parser
             // Store them in a map that we'll return
             const protectedBlocks = [];
@@ -1613,6 +1623,11 @@ function renderMarkdown(element, text) {
                 blockIndex++;
                 return placeholder;
             });
+
+            // Restore shielded code blocks
+            for (let ci = 0; ci < codeBlocks.length; ci++) {
+                s = s.split(`\x00CODE${ci}\x00`).join(codeBlocks[ci]);
+            }
 
             // Return both the normalized text and the protected blocks
             return { text: s, protectedBlocks };

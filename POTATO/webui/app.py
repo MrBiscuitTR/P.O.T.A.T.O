@@ -982,6 +982,21 @@ def chat_session_route(session_id):
         return jsonify(chat)
     return jsonify({"error": "Not found"}), 404
 
+@app.route('/api/chats/<session_id>/messages', methods=['DELETE'])
+def clear_chat_messages(session_id):
+    """Clear all messages in a chat session (keep the chat, just empty its history)"""
+    try:
+        path = os.path.join(CHATS_DIR, f"{session_id}.json")
+        if not os.path.exists(path):
+            return jsonify({"error": "Not found"}), 404
+        chat = load_chat_session(session_id)
+        if chat:
+            chat['messages'] = []
+            save_chat_session(session_id, [], title=chat.get('title'), is_voice_chat=session_id.startswith('vox_'))
+        return jsonify({"status": "cleared"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/chats/<session_id>/save_partial', methods=['POST'])
 def save_partial_response(session_id):
     """Save partial response when generation is stopped"""
@@ -2744,6 +2759,32 @@ def vox_speak():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/vox_speak_wav', methods=['POST'])
+def vox_speak_wav():
+    """Generate TTS audio and return as WAV bytes for browser playback"""
+    try:
+        data = request.json
+        text = data.get('text')
+        language = data.get('language', 'en')
+
+        if not text:
+            return jsonify({"error": "No text provided"}), 400
+
+        if language == 'en':
+            from POTATO.components.vocal_tools.clonevoice_turbo import generate_tts_wav
+            wav_bytes = generate_tts_wav(text)
+        else:
+            from POTATO.components.vocal_tools.clonevoice_multilanguage import generate_tts_wav_multilingual
+            wav_bytes = generate_tts_wav_multilingual(text, language=language)
+
+        if not wav_bytes:
+            return jsonify({"error": "TTS generation failed"}), 500
+
+        return Response(wav_bytes, mimetype='audio/wav',
+                        headers={'Content-Disposition': 'inline'})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/vox_stop', methods=['POST'])
 @app.route('/api/vox_stop_speak', methods=['POST'])
 def vox_stop():
@@ -2994,21 +3035,48 @@ def transcribe_realtime():
         
         # Read audio bytes
         audio_bytes = audio_file.read()
-        
+
+        audio_data = None
+        sample_rate = 16000
+
+        # Try scipy wavfile first (handles WAV directly)
         try:
-            # Try scipy wavfile first (handles WAV directly)
             from scipy.io import wavfile
-            sample_rate, audio_data = wavfile.read(io.BytesIO(audio_bytes))
-            # Convert to float32 [-1, 1]
-            if audio_data.dtype == np.int16:
-                audio_data = audio_data.astype(np.float32) / 32768.0
-            elif audio_data.dtype == np.int32:
-                audio_data = audio_data.astype(np.float32) / 2147483648.0
+            sr, ad = wavfile.read(io.BytesIO(audio_bytes))
+            if ad.dtype == np.int16:
+                ad = ad.astype(np.float32) / 32768.0
+            elif ad.dtype == np.int32:
+                ad = ad.astype(np.float32) / 2147483648.0
             else:
-                audio_data = audio_data.astype(np.float32)
+                ad = ad.astype(np.float32)
+            audio_data = ad
+            sample_rate = sr
         except Exception as wav_error:
-            print(f"WAV parsing failed: {wav_error}")
-            return jsonify({"error": "Failed to parse audio. Please check microphone."}), 400
+            print(f"WAV parsing failed: {wav_error}, trying PyAV for WebM/Opus...")
+
+        # Fallback: use PyAV to decode WebM, Opus, OGG, or any container
+        if audio_data is None:
+            try:
+                import av
+                frames = []
+                with av.open(io.BytesIO(audio_bytes)) as container:
+                    audio_stream = next(s for s in container.streams if s.type == 'audio')
+                    sample_rate = audio_stream.codec_context.sample_rate or 16000
+                    resampler = av.AudioResampler(format='fltp', layout='mono', rate=16000)
+                    for frame in container.decode(audio_stream):
+                        for rf in resampler.resample(frame):
+                            frames.append(rf.to_ndarray()[0])
+                    # flush resampler
+                    for rf in resampler.resample(None):
+                        frames.append(rf.to_ndarray()[0])
+                if frames:
+                    audio_data = np.concatenate(frames).astype(np.float32)
+                    sample_rate = 16000  # already resampled
+            except Exception as av_error:
+                print(f"PyAV parsing failed: {av_error}")
+
+        if audio_data is None:
+            return jsonify({"error": "Failed to parse audio. Unsupported format."}), 400
         
         # Get Whisper pipeline (loads model if needed)
         pipe = get_whisper_pipeline()
