@@ -21,18 +21,20 @@ from pathlib import Path
 # Force offline mode
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["HF_METRICS_OFFLINE"] = "1"
 os.environ.pop("HF_TOKEN", None)
 
 # Force CUDA GPU (not iGPU) and maximize performance
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Async CUDA for speed
 torch.cuda.set_device(0)
 
 # Set to high performance mode (no power saving)
 if torch.cuda.is_available():
-    torch.backends.cudnn.benchmark = True  # Auto-tune for best performance
-    torch.backends.cuda.matmul.allow_tf32 = True  # Faster matmul on Ampere+
-    torch.backends.cudnn.allow_tf32 = True
+    print("[TTS - Chatterbox] CUDA is available. High performance mode enabled.")
+    # torch.backends.cudnn.benchmark = True  # Auto-tune for best performance
+    # torch.backends.cuda.matmul.allow_tf32 = True  # Faster matmul on Ampere+
+    # torch.backends.cudnn.allow_tf32 = True
 
 try:
     from chatterbox.tts_turbo import ChatterboxTurboTTS
@@ -93,7 +95,7 @@ def _get_model():
                 # - Progress bar x/1000 is internal to model.generate() - cannot be configured
                 # - Model is NOT a PyTorch nn.Module, so no .parameters() or .eval() methods
 
-                print(f"[TTS] Chatterbox Turbo model loaded to {device}")
+                print(f"[TTS - Chatterbox] Chatterbox Turbo model loaded to {device}")
 
                 # NOTE: Chatterbox Turbo is NOT a standard PyTorch nn.Module
                 # - No .parameters() method (not trainable via standard PyTorch)
@@ -108,18 +110,18 @@ def _get_model():
 
                     try:
                         vram_used = torch.cuda.memory_allocated(0) / 1e9
-                        print(f"[TTS] Using {vram_used:.2f}GB VRAM")
+                        print(f"[TTS - Chatterbox] Using {vram_used:.2f}GB VRAM")
                     except:
                         pass
 
-                print("[TTS] Ready for inference (Turbo mode: fast 1-step generation)")
+                print("[TTS - Chatterbox] Ready for inference (Turbo mode: fast 1-step generation)")
 
     return _model
 
 def preload_model():
     """Preload TTS model to VRAM without generating audio. Called when speech detected."""
     _get_model()  # This loads the model if not already loaded
-    print("[TTS] Model preloaded to VRAM")
+    print("[TTS - Chatterbox] Model preloaded to VRAM")
 
 # Abbreviation-safe sentence splitter
 ABBREVIATIONS = [
@@ -230,7 +232,7 @@ def generate_worker(text_groups, audio_q):
         for sentence in text_groups:
             # Check stop flags before processing each sentence
             if stop_event.is_set() or shutdown_event.is_set():
-                print("[TTS] Generation stopped by flag")
+                print("[TTS - Chatterbox] Generation stopped by flag")
                 break
 
             try:
@@ -251,15 +253,15 @@ def generate_worker(text_groups, audio_q):
                 try:
                     audio_q.put((sentence, wav.cpu().float().numpy()), timeout=0.5)
                 except queue.Full:
-                    print("[TTS] Queue full, skipping chunk")
+                    print("[TTS - Chatterbox] Queue full, skipping chunk")
                     break
             except Exception as e:
-                print(f"[TTS] Error generating sentence: {e}")
+                print(f"[TTS - Chatterbox] Error generating sentence: {e}")
                 # Continue to next sentence instead of crashing
                 continue
                 
     except Exception as e:
-        print(f"[TTS] Fatal error in generate_worker: {e}")
+        print(f"[TTS - Chatterbox] Fatal error in generate_worker: {e}")
         import traceback
         traceback.print_exc()
     finally:
@@ -276,7 +278,7 @@ def playback_worker(audio_q, sample_rate):
         while True:
             # Check shutdown first - exit immediately if set
             if shutdown_event.is_set():
-                print("[TTS] Playback worker shutting down...")
+                print("[TTS - Chatterbox] Playback worker shutting down...")
                 break
 
             if stop_event.is_set():
@@ -296,7 +298,7 @@ def playback_worker(audio_q, sample_rate):
                         break
 
                 if cleared_count > 0:
-                    print(f"[TTS] Cleared {cleared_count} queued chunks")
+                    print(f"[TTS - Chatterbox] Cleared {cleared_count} queued chunks")
 
                 # DON'T clear stop_event here - let stop_current_tts() handle it
                 # Wait a moment before checking again
@@ -312,7 +314,7 @@ def playback_worker(audio_q, sample_rate):
 
             # None signals end of generation
             if item is None:
-                print("[TTS] Received end signal (None)")
+                print("[TTS - Chatterbox] Received end signal (None)")
                 break
 
             # Check stop again before playing
@@ -326,14 +328,14 @@ def playback_worker(audio_q, sample_rate):
                 # Play audio and wait for completion
                 sd.play(wav_np, samplerate=sample_rate, blocking=True)
             except Exception as e:
-                print(f"[TTS] Playback error: {e}")
+                print(f"[TTS - Chatterbox] Playback error: {e}")
                 # Continue to next chunk instead of crashing
 
     except Exception as e:
-        print(f"[TTS] Playback error: {e}")
+        print(f"[TTS - Chatterbox] Playback error: {e}")
     finally:
         current_stream = None
-        print("[TTS] Playback worker exited")
+        print("[TTS - Chatterbox] Playback worker exited")
 
 def speak_sentences_grouped(text: str):
     """Stream TTS in chunks with seamless playback queue. Safe for very long text."""
@@ -378,7 +380,7 @@ def speak_sentences_grouped(text: str):
         producer_thread.join(timeout=300)  # 5 minute timeout
         
     except Exception as e:
-        print(f"[TTS] Error in speak_sentences_grouped: {e}")
+        print(f"[TTS - Chatterbox] Error in speak_sentences_grouped: {e}")
         import traceback
         traceback.print_exc()
         # Don't crash - let the error be handled gracefully
@@ -401,15 +403,15 @@ def generate_tts_wav(text: str) -> bytes:
     # This is normal behavior and doesn't indicate progressive slowdown
 
     # Clear CUDA cache before generation
-    if device == "cuda":
-        torch.cuda.empty_cache()
+    # if device == "cuda":
+    #     torch.cuda.empty_cache()
 
     chunks = []
     with torch.inference_mode():  # More efficient than autocast for inference
         for sentence in groups:
             # Check stop flags before each sentence
             if stop_event.is_set() or shutdown_event.is_set():
-                print("[TTS] Generation cancelled by stop flag")
+                print("[TTS - Chatterbox] Generation cancelled by stop flag")
                 break
 
             if not sentence.strip():
@@ -441,7 +443,7 @@ def generate_tts_wav(text: str) -> bytes:
                 chunks.append(wav)
 
             except Exception as e:
-                print(f"[TTS] Error generating sentence: {e}")
+                print(f"[TTS - Chatterbox] Error generating sentence: {e}")
                 continue
 
     if not chunks:
@@ -458,8 +460,8 @@ def generate_tts_wav(text: str) -> bytes:
     # NOTE: s3gen (S3Token2Wav) component doesn't have resettable state
     # The model handles its own internal state management
     # Clear CUDA cache after generation to free up temp memory
-    if device == "cuda":
-        torch.cuda.empty_cache()
+    # if device == "cuda":
+    #     torch.cuda.empty_cache()
 
     return buf.getvalue()
 
@@ -498,8 +500,8 @@ def generate_tts_wav_streamed(text: str):
             stop_event.clear()
 
         # Clear CUDA cache before starting a batch of generations
-        if device == "cuda":
-            torch.cuda.empty_cache()
+        # if device == "cuda":
+        #     torch.cuda.empty_cache()
 
         prompt_path = _get_cached_audio_prompt_path()
 
@@ -579,7 +581,7 @@ def stop_current_tts():
         try:
             sd.stop()
         except Exception as e:
-            print(f"[TTS] Error stopping audio: {e}")
+            print(f"[TTS - Chatterbox] Error stopping audio: {e}")
         
         # Clear audio queue completely
         cleared_count = 0
@@ -602,7 +604,7 @@ def stop_current_tts():
         stop_event.clear()
         
     except Exception as e:
-        print(f"[TTS] Error in stop_current_tts (non-fatal): {e}")
+        print(f"[TTS - Chatterbox] Error in stop_current_tts (non-fatal): {e}")
         import traceback
         traceback.print_exc()
         # Clear the flag anyway
@@ -616,7 +618,7 @@ def shutdown_tts():
     """Stop everything and unload the model to free VRAM. Safe, won't crash app."""
     global _model, producer_thread, playback_thread
 
-    print("[TTS] Starting shutdown sequence...")
+    print("[TTS - Chatterbox] Starting shutdown sequence...")
 
     # Signal stop
     stop_event.set()
@@ -637,7 +639,7 @@ def shutdown_tts():
         except:
             break
     if cleared > 0:
-        print(f"[TTS] Cleared {cleared} items from queue")
+        print(f"[TTS - Chatterbox] Cleared {cleared} items from queue")
 
     # Put None to signal threads to exit
     try:
@@ -647,25 +649,25 @@ def shutdown_tts():
 
     # Wait for threads with logging
     if producer_thread is not None and producer_thread.is_alive():
-        print("[TTS] Waiting for producer thread...")
+        print("[TTS - Chatterbox] Waiting for producer thread...")
         producer_thread.join(timeout=0.5)
         if producer_thread.is_alive():
-            print("[TTS] Producer thread still alive (daemon will exit with app)")
+            print("[TTS - Chatterbox] Producer thread still alive (daemon will exit with app)")
 
     if playback_thread is not None and playback_thread.is_alive():
-        print("[TTS] Waiting for playback thread...")
+        print("[TTS - Chatterbox] Waiting for playback thread...")
         playback_thread.join(timeout=0.5)
         if playback_thread.is_alive():
-            print("[TTS] Playback thread still alive (daemon will exit with app)")
+            print("[TTS - Chatterbox] Playback thread still alive (daemon will exit with app)")
 
     # Unload model
     with _model_lock:
         if _model is not None:
-            print("[TTS] Unloading model from VRAM...")
+            print("[TTS - Chatterbox] Unloading model from VRAM...")
             del _model
             _model = None
             torch.cuda.empty_cache()
-            print("[TTS] Model unloaded, VRAM freed")
+            print("[TTS - Chatterbox] Model unloaded, VRAM freed")
 
     # Reset events
     stop_event.clear()

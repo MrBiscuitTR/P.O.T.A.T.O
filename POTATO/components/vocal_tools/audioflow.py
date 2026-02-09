@@ -155,7 +155,7 @@ def speak(text: str, language: str = "en"):
         language: Language code (default: "en")
     """
     if not TTS_AVAILABLE:
-        print(f"[TTS] {text}")
+        print(f"[TTS - Chatterbox] {text}")
         return
     
     if language == "en":
@@ -167,7 +167,7 @@ def speak(text: str, language: str = "en"):
             from POTATO.components.vocal_tools.clonevoice_multilanguage import speak_multilingual
             speak_multilingual(text, language=language)
         except ImportError:
-            print(f"[TTS] Multilingual TTS not available, using English TTS")
+            print(f"[TTS - Chatterbox] Multilingual TTS not available, using English TTS")
             speak_sentences_grouped(text)
 
 

@@ -385,17 +385,18 @@ async function startVOXRecording() {
         const dataArray = new Uint8Array(analyzer.frequencyBinCount);
         let hasSignificantAudio = false;
         let significantAudioCount = 0;
-        const REQUIRED_SIGNIFICANT_CHECKS = 3; // Must have 3+ checks above threshold
-        const SILENCE_THRESHOLD = 20; // Audio level below this is considered silence
+        const REQUIRED_SIGNIFICANT_CHECKS = 5; // Must have 5+ checks above threshold (increased from 3)
+        const SPEECH_THRESHOLD = 38; // Audio level above this is considered actual speech (increased from 22)
+        const SILENCE_THRESHOLD = 25; // Audio level below this is considered silence (increased from 20)
         const SILENCE_DURATION = 1000; // Stop recording after 1.0s of silence
         let consecutiveSilenceChecks = 0;
-        
+
         // Check audio level periodically - filters garbage/background noise AND detects silence
         const volumeCheckInterval = setInterval(() => {
             analyzer.getByteFrequencyData(dataArray);
             const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
             voxLastAudioLevel = average;
-            
+
             // Update waveform visualizer
             const waveform = document.getElementById('waveform');
             if (waveform) {
@@ -406,9 +407,9 @@ async function startVOXRecording() {
                     wave.style.height = `${height}px`;
                 });
             }
-            
-            // Check for significant audio (above 20 = actual speech)
-            if (average > 22) {
+
+            // Check for significant audio (above SPEECH_THRESHOLD = actual speech, not background noise)
+            if (average > SPEECH_THRESHOLD) {
                 significantAudioCount++;
                 consecutiveSilenceChecks = 0; // Reset silence counter
                 if (significantAudioCount >= REQUIRED_SIGNIFICANT_CHECKS) {
@@ -1497,7 +1498,7 @@ async function unloadSTT() {
             updateVOXStatus('STT unload error');
         }
     } catch (error) {
-        console.error('[STT] Unload error:', error);
+        console.error('[STT - Whisper] Unload error:', error);
         updateVOXStatus('STT unload failed');
     }
 }
@@ -1513,7 +1514,7 @@ async function unloadTTS() {
         voxIsSpeaking = false;
 
         updateVOXStatus('Unloading TTS...');
-        console.log('[TTS] Sending unload request...');
+        console.log('[TTS - Chatterbox] Sending unload request...');
 
         const response = await fetch('/api/unload_tts', { method: 'POST' });
 
@@ -1522,18 +1523,18 @@ async function unloadTTS() {
         }
 
         const result = await response.json();
-        console.log('[TTS] Unload response:', result);
+        console.log('[TTS - Chatterbox] Unload response:', result);
 
         if (result.success) {
             window.ttsManuallyUnloaded = true;
             updateVOXStatus('TTS unloaded - Ready');
-            console.log('[TTS] Unload successful');
+            console.log('[TTS - Chatterbox] Unload successful');
         } else {
             updateVOXStatus(`TTS unload error: ${result.error || 'Unknown'}`);
-            console.error('[TTS] Unload failed:', result);
+            console.error('[TTS - Chatterbox] Unload failed:', result);
         }
     } catch (error) {
-        console.error('[TTS] Unload error:', error);
+        console.error('[TTS - Chatterbox] Unload error:', error);
         updateVOXStatus(`TTS unload failed: ${error.message}`);
     }
 }

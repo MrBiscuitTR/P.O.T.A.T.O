@@ -109,7 +109,7 @@ def _ensure_device_initialized():
             selected_device = output_devices[0] if output_devices else None
         _device_initialized = True
         if selected_device is not None:
-            print(f"[TTS] Using default audio device: {sd.query_devices(selected_device)['name']}")
+            print(f"[TTS - Chatterbox] Using default audio device: {sd.query_devices(selected_device)['name']}")
 
 # DO NOT call select_output_device() at import time - only in __main__ block
 
@@ -146,7 +146,7 @@ def preload_model(language: str = "en"):
         _get_english_model()
     else:
         _get_multilingual_model()
-    print(f"[TTS] {language} model preloaded to VRAM")
+    print(f"[TTS - Chatterbox] {language} model preloaded to VRAM")
 
 def unload_models():
     """Unload both models from memory"""
@@ -284,7 +284,7 @@ def generate_tts_wav_multilingual(text: str, language: str = "en") -> bytes:
                 wav_np /= max_abs_val
             chunks.append(wav_np)
         except Exception as e:
-            print(f"[TTS] Error generating sentence: {e}")
+            print(f"[TTS - Chatterbox] Error generating sentence: {e}")
             continue
 
     if not chunks:

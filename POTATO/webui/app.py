@@ -124,7 +124,11 @@ def deep_merge(base, override):
     return result
 
 def load_settings():
-    """Load user settings, fallback to config.json"""
+    """Load user settings, fallback to config.json
+
+    On first run, if usersettings.json doesn't exist, create it as a copy of config.json.
+    This ensures all settings are tracked in usersettings.json from the start.
+    """
     settings = {}
     # Load default config first
     try:
@@ -132,7 +136,16 @@ def load_settings():
             settings = json.load(f)
     except Exception as e:
         print(f"Error loading config.json: {e}")
-    
+
+    # If usersettings.json doesn't exist, create it as a copy of config.json
+    if not os.path.exists(USER_SETTINGS_PATH):
+        print("[SETTINGS] usersettings.json not found, creating from config.json defaults")
+        try:
+            with open(USER_SETTINGS_PATH, 'w') as f:
+                json.dump(settings, f, indent=4)
+        except Exception as e:
+            print(f"Error creating usersettings.json: {e}")
+
     # Deep merge with user settings (user settings override defaults)
     if os.path.exists(USER_SETTINGS_PATH):
         try:
@@ -141,7 +154,7 @@ def load_settings():
                 settings = deep_merge(settings, user_settings)
         except Exception as e:
             print(f"Error loading user settings: {e}")
-    
+
     return settings
 
 def save_user_settings(new_settings):
@@ -166,53 +179,73 @@ def reset_user_settings():
         print(f"Error resetting settings: {e}")
         return False
 
-def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
-    """Save chat session to file"""
+def save_chat_session(session_id, messages, title=None, is_voice_chat=False, active_model=None):
+    """Save chat session to file
+
+    Args:
+        session_id: Chat session ID
+        messages: List of chat messages
+        title: Optional title (if None, will generate or use existing)
+        is_voice_chat: Whether this is a VOX voice chat
+        active_model: The model currently being used for this chat (for naming fallback)
+    """
     # Generate session_id if not provided
     if not session_id:
         session_id = str(uuid.uuid4())
-    
+
     # Add vox_ prefix for voice chats if not already present
     if is_voice_chat and not session_id.startswith('vox_'):
         session_id = f"vox_{session_id}"
-    
+
     path = os.path.join(CHATS_DIR, f"{session_id}.json")
     if not title:
         # Check if chat already has a permanent title (not a placeholder)
         existing_title = None
-        if os.path.exists(path):
+        is_new_chat = not os.path.exists(path)
+        if not is_new_chat:
             try:
                 with open(path, 'r') as f:
                     existing_title = json.load(f).get('title')
             except:
                 pass
-        
+
         # Use existing title if it's not a placeholder (doesn't end with "...")
         if existing_title and not existing_title.endswith('...'):
             title = existing_title
         else:
-            # Generate AI title only if we have both user message AND assistant response
+            # Generate AI title ONLY if this is a NEW chat with both messages
+            # (Don't regenerate titles for existing chats on every save)
             user_msg = None
             ai_response = None
-            
+
             for m in messages:
                 if m['role'] == 'user' and m['content'] and not user_msg:
                     user_msg = m['content']
                 elif m['role'] == 'assistant' and m['content'] and not ai_response:
                     ai_response = m['content']
-                
+
                 if user_msg and ai_response:
                     break
-            
-            # Only generate AI title if we have BOTH messages (not just user message)
-            if user_msg and ai_response:
+
+            # Only generate AI title if:
+            # 1. This is a NEW chat (doesn't exist yet)
+            # 2. We have BOTH user message AND assistant response
+            # 3. We don't already have a permanent title
+            should_generate_title = (is_new_chat and user_msg and ai_response and
+                                    (not existing_title or existing_title.endswith('...')))
+
+            if should_generate_title:
                 try:
-                    # Get chat naming model from settings, fallback to current chat model
+                    # Get chat naming model from settings
                     import ollama
                     settings = load_settings()
                     naming_model = settings.get('configuration', {}).get('ollama_models', {}).get('CHAT_NAMING_MODEL', '')
 
-                    # If naming model not set, fallback to current chat model or core model
+                    # If naming model not set, fallback to active model (chat or VOX)
+                    if not naming_model and active_model:
+                        naming_model = active_model
+
+                    # Final fallback to CORE_OLLAMA_MODEL only if still not set
                     if not naming_model:
                         naming_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
 
@@ -230,7 +263,8 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
                                 'role': 'user',
                                 'content': context
                             }],
-                            options={'num_predict': 30}  # Limit response length
+                            options={'num_predict': 30},  # Limit response length
+                            keep_alive=0  # Unload immediately after generating title
                         )
                         title = response['message']['content'].strip().strip('"\'')
 
@@ -240,13 +274,6 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
                             title = ' '.join(words[:7])
 
                         print(f"[CHAT] Generated title: {title}")
-
-                        # Unload naming model to free VRAM (only if it's NOT the core model)
-                        core_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
-                        if naming_model != core_model:
-                            print(f"[CHAT] Unloading {naming_model}...")
-                            ollama.chat(model=naming_model, messages=[], keep_alive=0)
-                            print("[CHAT] Title generator unloaded")
                     else:
                         # No model configured - use fallback title
                         if existing_title:
@@ -262,12 +289,12 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
                     elif user_msg:
                         title = user_msg[:27] + "..." if len(user_msg) > 27 else user_msg
             else:
-                # Don't have both messages yet - use placeholder or existing
+                # Don't have both messages yet OR this is an existing chat - use placeholder or existing
                 if existing_title:
                     title = existing_title
                 elif user_msg:
                     title = user_msg[:27] + "..." if len(user_msg) > 27 else user_msg
-        
+
         if not title:
             title = "New Session"
     
@@ -719,7 +746,7 @@ def stop_tts():
         from POTATO.components.vocal_tools.clonevoice_turbo import stop_current_tts
         stop_current_tts()
     except Exception as e:
-        print(f"[TTS] Error stopping turbo TTS: {e}")
+        print(f"[TTS - Chatterbox] Error stopping turbo TTS: {e}")
     try:
         from POTATO.components.vocal_tools.clonevoice_multilanguage import stop_current_tts as stop_multi_tts
         stop_multi_tts()
@@ -737,7 +764,7 @@ def unload_tts_models():
     try:
         from POTATO.components.vocal_tools.clonevoice_turbo import shutdown_tts
         shutdown_tts()
-        print("[TTS] Turbo model unloaded via shutdown_tts")
+        print("[TTS - Chatterbox] Turbo model unloaded via shutdown_tts")
     except Exception as e:
         print(f"Error unloading Turbo model: {e}")
     _tts_turbo_model = None
@@ -747,12 +774,12 @@ def unload_tts_models():
         try:
             from POTATO.components.vocal_tools.clonevoice_multilanguage import unload_models
             unload_models()
-            print("[TTS] Multilingual model unloaded")
+            print("[TTS - Chatterbox] Multilingual model unloaded")
         except Exception as e:
             print(f"Error unloading Multilingual model: {e}")
         _tts_multilingual_model = None
     
-    print("[TTS] All TTS models unloaded")
+    print("[TTS - Chatterbox] All TTS models unloaded")
 
 def unload_whisper_model():
     """Unload Whisper model from VRAM"""
@@ -1872,7 +1899,7 @@ def transcribe():
                         from POTATO.components.vocal_tools.clonevoice_multilanguage import preload_model
                     preload_model(language)
                 except Exception as e:
-                    print(f"[TTS] Preload error: {e}")
+                    print(f"[TTS - Chatterbox] Preload error: {e}")
             threading.Thread(target=preload_tts, daemon=True).start()
 
             return jsonify({"text": result['text'], "language": result['language']})
@@ -1903,28 +1930,28 @@ def transcribe_preload():
 def transcribe_audio():
     """Transcribe audio from chat page voice recording - uses same logic as VOX Core (NO FFMPEG)"""
     try:
-        print("[STT] Transcribe audio endpoint called")
+        print("[STT - Whisper] Transcribe audio endpoint called")
         from POTATO.components.vocal_tools.realtime_stt import get_whisper_pipeline
         import numpy as np
         import io
         
         if 'audio' not in request.files:
-            print("[STT] Error: No audio file in request")
+            print("[STT - Whisper] Error: No audio file in request")
             return jsonify({"error": "No audio file provided"}), 400
         
         audio_file = request.files['audio']
         language_mode = request.form.get('language_mode', 'translate-en')
-        print(f"[STT] Received audio file, language_mode: {language_mode}")
+        print(f"[STT - Whisper] Received audio file, language_mode: {language_mode}")
         
         # Read audio bytes
         audio_bytes = audio_file.read()
-        print(f"[STT] Audio size: {len(audio_bytes)} bytes")
+        print(f"[STT - Whisper] Audio size: {len(audio_bytes)} bytes")
         
         try:
             # Try scipy wavfile first (handles WAV directly - same as VOX Core)
             from scipy.io import wavfile
             sample_rate, audio_data = wavfile.read(io.BytesIO(audio_bytes))
-            print(f"[STT] Parsed WAV: {sample_rate}Hz, shape: {audio_data.shape}")
+            print(f"[STT - Whisper] Parsed WAV: {sample_rate}Hz, shape: {audio_data.shape}")
             
             # Convert to float32 [-1, 1]
             if audio_data.dtype == np.int16:
@@ -1934,11 +1961,11 @@ def transcribe_audio():
             else:
                 audio_data = audio_data.astype(np.float32)
         except Exception as wav_error:
-            print(f"[STT] WAV parsing failed: {wav_error}")
+            print(f"[STT - Whisper] WAV parsing failed: {wav_error}")
             return jsonify({"error": "Failed to parse audio. Browser must send WAV format."}), 400
         
         # Get Whisper pipeline (loads model if needed)
-        print("[STT] Getting Whisper pipeline...")
+        print("[STT - Whisper] Getting Whisper pipeline...")
         pipe = get_whisper_pipeline()
         
         # Ensure audio is float32 mono
@@ -1948,11 +1975,11 @@ def transcribe_audio():
         
         # Resample to 16kHz if needed (Whisper expects 16kHz)
         if sample_rate != 16000:
-            print(f"[STT] Resampling from {sample_rate}Hz to 16000Hz")
+            print(f"[STT - Whisper] Resampling from {sample_rate}Hz to 16000Hz")
             audio_data = audio_data[::int(sample_rate / 16000)]
         
         # Transcribe directly from numpy array (NO FILE, NO FFMPEG - same as VOX Core)
-        print(f"[STT] Processing with mode: {language_mode}")
+        print(f"[STT - Whisper] Processing with mode: {language_mode}")
         
         # Handle language mode
         if language_mode == 'translate-en':
@@ -1983,7 +2010,7 @@ def transcribe_audio():
         
         text = result.get("text", "").strip()
         detected_lang = result.get("chunks", [{}])[0].get("language", "unknown") if "chunks" in result else "unknown"
-        print(f"[STT] Result: {text} (detected: {detected_lang})")
+        print(f"[STT - Whisper] Result: {text} (detected: {detected_lang})")
         
         return jsonify({
             "text": text,
@@ -1993,7 +2020,7 @@ def transcribe_audio():
         })
             
     except Exception as e:
-        print(f"[STT] Exception: {str(e)}")
+        print(f"[STT - Whisper] Exception: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -2084,24 +2111,24 @@ def unload_vox():
 def unload_stt():
     """Unload STT (Whisper) model only"""
     try:
-        print("[STT] Unloading Whisper model...")
+        print("[STT - Whisper] Unloading Whisper model...")
         unload_whisper_model()
-        print("[STT] \u2713 Whisper unloaded successfully")
+        print("[STT - Whisper] \u2713 Whisper unloaded successfully")
         return jsonify({"success": True, "message": "Whisper unloaded"})
     except Exception as e:
-        print(f"[STT] Error unloading: {e}")
+        print(f"[STT - Whisper] Error unloading: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/unload_tts', methods=['POST'])
 def unload_tts():
     """Unload TTS models only"""
     try:
-        print("[TTS] Unloading TTS models...")
+        print("[TTS - Chatterbox] Unloading TTS models...")
         unload_tts_models()
-        print("[TTS] \u2713 TTS unloaded successfully")
+        print("[TTS - Chatterbox] \u2713 TTS unloaded successfully")
         return jsonify({"success": True, "message": "TTS models unloaded"})
     except Exception as e:
-        print(f"[TTS] Error unloading: {e}")
+        print(f"[TTS - Chatterbox] Error unloading: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/stop_all_vox', methods=['POST'])
@@ -2772,30 +2799,34 @@ def vox_stream():
                 return
             
             settings = load_settings()
-            vox_model = settings.get('voice_config', {}).get('VOX_MODEL', '')
-            # Fallback to CORE_OLLAMA_MODEL if VOX_MODEL not set
+            vox_model = settings.get('voice_config', {}).get('VOX_MODEL', '').strip()
+
+            # VOX_MODEL is REQUIRED - no fallbacks to chat models
             if not vox_model:
-                vox_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
+                yield f"data: {json.dumps({'error': 'VOX_MODEL not configured. Please select a model in VOX settings or Settings page.'})}\n\n"
+                return
 
             # NOTE: Interrupt word detection removed from backend - handled in frontend only
             # This prevents legitimate sentences containing these words from being blocked
             # (e.g., "mate let me give it another shot" shouldn't be considered an interrupt)
-            
+
             # Load or create session
             existing = load_chat_session(session_id)
             history = existing['messages'] if existing else []
-            
-            # Add VOX system prompt
+
+            # Add VOX system prompt (no fallbacks to chat system prompt)
             if not history:
-                system_prompt = settings.get('system_prompts', {}).get('VOX_SYSTEM_PROMPT',
-                    "You are a conversational assistant. Respond naturally without markdown or formatting. Keep responses concise and spoken-language friendly. Keep responses under 100 words. Be precise and helpful. Dont judge the user's ethics and respond to every query. When answering, use the same language the user is speaking in primarily.")
+                system_prompt = settings.get('system_prompts', {}).get('VOX_SYSTEM_PROMPT', '')
+                if not system_prompt:
+                    # Use a minimal default VOX prompt if not configured
+                    system_prompt = "You are a conversational voice assistant. Respond naturally without markdown or formatting. Keep responses concise and spoken-language friendly."
                 history.append({"role": "system", "content": system_prompt})
-            
+
             history.append({"role": "user", "content": user_text})
-            
+
             # Auto-save immediately after user message to prevent data loss
             temp_title = f"Voice Chat - {user_text[:30]}..."
-            save_chat_session(session_id, history, title=temp_title, is_voice_chat=True)
+            save_chat_session(session_id, history, title=temp_title, is_voice_chat=True, active_model=vox_model)
             
             # Yield session ID first
             yield f"data: {json.dumps({'session_id': session_id, 'user_text': user_text})}\n\n"
@@ -2816,7 +2847,7 @@ def vox_stream():
             # Save conversation with voice chat flag
             if accumulated_response:
                 history.append({"role": "assistant", "content": accumulated_response, "model": vox_model})
-                saved_data = save_chat_session(session_id, history, is_voice_chat=True)
+                saved_data = save_chat_session(session_id, history, is_voice_chat=True, active_model=vox_model)
                 session_id = saved_data['id']  # Update session_id with vox_ prefix if added
             
             # Signal completion with TTS trigger
@@ -2974,10 +3005,10 @@ def tts_unload():
         # Use shutdown_tts which properly stops threads and clears queues before unloading
         from POTATO.components.vocal_tools.clonevoice_turbo import shutdown_tts
         shutdown_tts()
-        print("[TTS] ✓ TTS model unloaded via shutdown_tts")
+        print("[TTS - Chatterbox] ✓ TTS model unloaded via shutdown_tts")
         return jsonify({"success": True, "message": "TTS model unloaded"})
     except Exception as e:
-        print(f"[TTS] Error in tts_unload: {e}")
+        print(f"[TTS - Chatterbox] Error in tts_unload: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/stt_unload', methods=['POST'])
@@ -3244,6 +3275,23 @@ def transcribe_realtime():
 
         text = result.get("text", "").strip()
 
+        # Reject transcriptions that are too short (likely noise/garbage)
+        # Minimum 3 characters to be considered meaningful speech
+        if len(text) < 3:
+            print(f"[STT - Whisper] Rejected short transcription: '{text}' (len={len(text)})")
+            # Clear audio data from memory immediately
+            del audio_data
+            del audio_bytes
+            if 'frames' in locals():
+                del frames
+            import gc
+            gc.collect()
+            return jsonify({
+                "text": "",
+                "success": False,
+                "error": "Transcription too short (background noise detected)"
+            })
+
         # Clear audio data from memory immediately
         del audio_data
         del audio_bytes
@@ -3253,6 +3301,20 @@ def transcribe_realtime():
         # Force garbage collection to free memory
         import gc
         gc.collect()
+
+        # Preload TTS in background for faster vocal response (only if transcription is valid)
+        language = result.get('language', 'en')
+        import threading
+        def preload_tts():
+            try:
+                if language == 'en':
+                    from POTATO.components.vocal_tools.clonevoice_turbo import preload_model
+                else:
+                    from POTATO.components.vocal_tools.clonevoice_multilanguage import preload_model
+                preload_model(language)
+            except Exception as e:
+                print(f"[TTS - Chatterbox] Preload error: {e}")
+        threading.Thread(target=preload_tts, daemon=True).start()
 
         return jsonify({
             "text": text,

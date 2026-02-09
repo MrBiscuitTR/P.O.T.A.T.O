@@ -1,7 +1,7 @@
 {
   "name": "P.O.T.A.T.O Interface",
   "short_name": "P.O.T.A.T.O",
-  "description": "Personal Offline Text And Task Operator - AI Assistant Interface",
+  "description": "Practical Omnipurpose Technical AI Tool Operator - Web GUI",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0a0a0a",

@@ -3097,7 +3097,7 @@ async function unloadSTT() {
             whisperPreloaded = false;
             window.whisperPreloaded = false;
             window.whisperModelLoaded = false;
-            console.log('[STT] Whisper model unloaded');
+            console.log('[STT - Whisper] Whisper model unloaded');
             
             const btn = document.getElementById('unload-stt-btn');
             if (btn) {
@@ -3108,21 +3108,21 @@ async function unloadSTT() {
             }
         }
     } catch (error) {
-        console.error('[STT] Error unloading Whisper:', error);
+        console.error('[STT - Whisper] Error unloading Whisper:', error);
         alert('Error unloading STT: ' + error.message);
     }
 }
 
 async function unloadTTS() {
     try {
-        console.log('[TTS] Unloading TTS models...');
+        console.log('[TTS - Chatterbox] Unloading TTS models...');
         const response = await fetch('/api/unload_tts', { method: 'POST' });
         const data = await response.json();
         
         if (data.success) {
             ttsManuallyUnloaded = true;
             window.ttsManuallyUnloaded = true;  // Expose globally
-            console.log('[TTS] TTS model unloaded:', data.message);
+            console.log('[TTS - Chatterbox] TTS model unloaded:', data.message);
             
             const btn = document.getElementById('unload-tts-btn');
             if (btn) {
@@ -3132,10 +3132,10 @@ async function unloadTTS() {
                 }, 2000);
             }
         } else {
-            console.error('[TTS] Unload failed:', data.error);
+            console.error('[TTS - Chatterbox] Unload failed:', data.error);
         }
     } catch (error) {
-        console.error('[TTS] Error unloading TTS:', error);
+        console.error('[TTS - Chatterbox] Error unloading TTS:', error);
         alert('Error unloading TTS: ' + error.message);
     }
 }
@@ -3143,7 +3143,7 @@ async function unloadTTS() {
 // Auto-reload STT when recording starts
 function reloadSTTIfNeeded() {
     if (sttManuallyUnloaded) {
-        console.log('[STT] Model was manually unloaded, will reload on next transcription');
+        console.log('[STT - Whisper] Model was manually unloaded, will reload on next transcription');
         sttManuallyUnloaded = false;
         whisperPreloaded = false;
         window.whisperPreloaded = false;
