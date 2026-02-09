@@ -345,12 +345,11 @@ async function startVOXRecording() {
     }
     
     // PRIORITY: Stop TTS if speaking (user speech takes priority)
-    if (voxCurrentAudio) {
+    // Flush the entire audio queue so queued chunks don't play later
+    if (voxCurrentAudio || voxAudioQueue.length > 0 || voxIsSpeaking) {
         console.log('[VOX] Stopping TTS - user is speaking');
-        voxCurrentAudio.pause();
-        voxCurrentAudio.currentTime = 0;
-        voxCurrentAudio = null;
-        // Also stop backend TTS
+        _flushAudioQueue();
+        // Also stop backend TTS generation
         try {
             await fetch('/api/vox_stop_speak', { method: 'POST' });
         } catch (e) {
@@ -387,8 +386,8 @@ async function startVOXRecording() {
         let hasSignificantAudio = false;
         let significantAudioCount = 0;
         const REQUIRED_SIGNIFICANT_CHECKS = 3; // Must have 3+ checks above threshold
-        const SILENCE_THRESHOLD = 15; // Audio level below this is considered silence
-        const SILENCE_DURATION = 1500; // Stop recording after 1.5s of silence
+        const SILENCE_THRESHOLD = 20; // Audio level below this is considered silence
+        const SILENCE_DURATION = 1000; // Stop recording after 1.0s of silence
         let consecutiveSilenceChecks = 0;
         
         // Check audio level periodically - filters garbage/background noise AND detects silence
@@ -409,7 +408,7 @@ async function startVOXRecording() {
             }
             
             // Check for significant audio (above 20 = actual speech)
-            if (average > 20) {
+            if (average > 22) {
                 significantAudioCount++;
                 consecutiveSilenceChecks = 0; // Reset silence counter
                 if (significantAudioCount >= REQUIRED_SIGNIFICANT_CHECKS) {
@@ -870,7 +869,99 @@ function stopContinuousTranscription() {
     }
 }
 
-// Speak text using TTS - audio is generated server-side and played in browser
+// ============================================================
+// Streaming TTS Audio Queue
+// ============================================================
+// Audio chunks arrive from the server one-by-one via SSE.
+// Each chunk is decoded and queued.  A playback loop drains the
+// queue, playing chunks back-to-back with no gap.  If the user
+// presses "Stop Speaking" or "Stop All", the queue is flushed,
+// the current Audio element is stopped, and the SSE fetch is
+// aborted so the server stops generating.
+
+let voxTtsAbortController = null;  // AbortController for the SSE fetch
+let voxAudioQueue = [];            // Array of {audio: Audio, url: string} waiting to play
+let voxQueuePlaying = false;       // True while the queue drain loop is active
+let voxTtsCancelled = false;       // Set true by stop functions to break loops
+
+/**
+ * Drain the audio queue: plays items one-by-one until the queue is
+ * empty or playback is cancelled.  Called once when the first chunk
+ * arrives; subsequent chunks are picked up automatically.
+ */
+async function _drainAudioQueue() {
+    if (voxQueuePlaying) return;   // Already draining
+    voxQueuePlaying = true;
+
+    try {
+        while (voxAudioQueue.length > 0 && !voxTtsCancelled) {
+            const item = voxAudioQueue.shift();
+            if (!item) continue;
+
+            const { audio, url } = item;
+            voxCurrentAudio = audio;
+            voxActiveAudioElements.push(audio);
+
+            try {
+                // Play this chunk and wait for it to finish
+                await new Promise((resolve, reject) => {
+                    audio.onended = () => resolve();
+                    audio.onerror = (e) => reject(e);
+                    audio.play().catch(reject);
+                });
+            } catch (e) {
+                // Playback error or abort - keep going to next chunk unless cancelled
+                if (voxTtsCancelled) break;
+                console.warn('[VOX] Chunk playback error:', e);
+            } finally {
+                // Clean up this chunk
+                URL.revokeObjectURL(url);
+                const idx = voxActiveAudioElements.indexOf(audio);
+                if (idx > -1) voxActiveAudioElements.splice(idx, 1);
+                if (voxCurrentAudio === audio) voxCurrentAudio = null;
+            }
+        }
+    } finally {
+        voxQueuePlaying = false;
+    }
+}
+
+/**
+ * Flush the audio queue and stop any currently-playing chunk.
+ * Called by stopVOXSpeaking() and stopAllVOX().
+ */
+function _flushAudioQueue() {
+    // Mark cancelled so drain loop exits
+    voxTtsCancelled = true;
+
+    // Abort the SSE fetch so the server stops generating
+    if (voxTtsAbortController) {
+        try { voxTtsAbortController.abort(); } catch (e) {}
+        voxTtsAbortController = null;
+    }
+
+    // Stop currently playing audio
+    if (voxCurrentAudio) {
+        try { voxCurrentAudio.pause(); voxCurrentAudio.currentTime = 0; } catch (e) {}
+        voxCurrentAudio = null;
+    }
+
+    // Stop ALL tracked audio elements (safety net)
+    voxActiveAudioElements.forEach(a => {
+        try { a.pause(); a.currentTime = 0; } catch (e) {}
+    });
+    voxActiveAudioElements = [];
+
+    // Revoke URLs and clear the queue
+    voxAudioQueue.forEach(item => {
+        try { URL.revokeObjectURL(item.url); } catch (e) {}
+    });
+    voxAudioQueue = [];
+    voxQueuePlaying = false;
+}
+
+// Speak text using TTS - streams audio chunks from the server and plays them
+// back through a queue for near-instant perceived playback.
 async function speakText(text, language = 'en') {
     if (!text) return;
 
@@ -881,7 +972,17 @@ async function speakText(text, language = 'en') {
         await loadTTSModels(language);
     }
 
+    // CRITICAL: If TTS is already speaking, stop it first to prevent overlapping audio
+    // This ensures only ONE TTS stream is active at a time
+    if (voxIsSpeaking || voxTtsAbortController || voxQueuePlaying) {
+        console.log('[VOX] Stopping previous TTS before starting new one');
+        _flushAudioQueue();
+        // Wait a bit for the previous stream to fully abort
+        await new Promise(r => setTimeout(r, 50));
+    }
+
     voxIsSpeaking = true;
+    voxTtsCancelled = false;
 
     // CRITICAL: Pause recording while speaking to prevent echo/feedback
     const wasRecording = voxIsListening;
@@ -891,54 +992,94 @@ async function speakText(text, language = 'en') {
     }
 
     try {
-        const response = await fetch('/api/vox_speak_wav', {
+        // Create an AbortController so stop buttons can kill the fetch
+        voxTtsAbortController = new AbortController();
+
+        const response = await fetch('/api/vox_speak_wav_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, language })
+            body: JSON.stringify({ text, language }),
+            signal: voxTtsAbortController.signal
         });
 
-        if (!response.ok) throw new Error(`TTS request failed: ${response.status}`);
+        if (!response.ok) throw new Error(`TTS stream request failed: ${response.status}`);
 
-        const wavBlob = await response.blob();
-        const url = URL.createObjectURL(wavBlob);
+        // Read SSE events from the streaming response
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
 
-        const audio = new Audio(url);
+        while (true) {
+            if (voxTtsCancelled) break;
 
-        // Route to selected output device if supported
-        if (voxSelectedOutputDevice && typeof audio.setSinkId === 'function') {
-            try {
-                await audio.setSinkId(voxSelectedOutputDevice);
-            } catch (e) {
-                console.warn('[VOX] setSinkId failed:', e);
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            // Keep the last (possibly incomplete) line in the buffer
+            buffer = lines.pop();
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                try {
+                    const data = JSON.parse(line.slice(6));
+
+                    if (data.error) {
+                        console.error('[VOX] TTS stream error:', data.error);
+                        continue;
+                    }
+
+                    if (data.done) {
+                        console.log('[VOX] TTS stream complete');
+                        continue;
+                    }
+
+                    if (data.audio_b64) {
+                        // Decode base64 WAV into a Blob and create an Audio element
+                        const binaryStr = atob(data.audio_b64);
+                        const bytes = new Uint8Array(binaryStr.length);
+                        for (let i = 0; i < binaryStr.length; i++) {
+                            bytes[i] = binaryStr.charCodeAt(i);
+                        }
+                        const blob = new Blob([bytes], { type: 'audio/wav' });
+                        const url = URL.createObjectURL(blob);
+                        const audio = new Audio(url);
+
+                        // Route to selected output device if supported
+                        if (voxSelectedOutputDevice && typeof audio.setSinkId === 'function') {
+                            try { await audio.setSinkId(voxSelectedOutputDevice); } catch (e) {}
+                        }
+
+                        // Push to queue
+                        voxAudioQueue.push({ audio, url });
+                        console.log(`[VOX] Queued TTS chunk ${data.chunk + 1}/${data.total}`);
+
+                        // Start draining the queue as soon as the first chunk arrives
+                        // (_drainAudioQueue is a no-op if already running)
+                        _drainAudioQueue();
+                    }
+                } catch (parseErr) {
+                    // Ignore unparseable lines (SSE comments, blank lines)
+                }
             }
         }
 
-        voxCurrentAudio = audio;
-        voxActiveAudioElements.push(audio);  // Track all active audio
+        // All chunks received - wait for the queue to finish playing
+        // Poll until drain loop finishes (or cancelled)
+        while (voxQueuePlaying && !voxTtsCancelled) {
+            await new Promise(r => setTimeout(r, 100));
+        }
 
-        await new Promise((resolve, reject) => {
-            audio.onended = () => {
-                URL.revokeObjectURL(url);
-                // Remove from active list
-                const index = voxActiveAudioElements.indexOf(audio);
-                if (index > -1) voxActiveAudioElements.splice(index, 1);
-                resolve();
-            };
-            audio.onerror = (e) => {
-                URL.revokeObjectURL(url);
-                // Remove from active list
-                const index = voxActiveAudioElements.indexOf(audio);
-                if (index > -1) voxActiveAudioElements.splice(index, 1);
-                reject(e);
-            };
-            audio.play().catch(reject);
-        });
-
-        voxCurrentAudio = null;
+        console.log('[VOX] TTS playback finished');
     } catch (error) {
-        console.error('Error speaking:', error);
+        // AbortError is expected when the user presses stop
+        if (error.name !== 'AbortError') {
+            console.error('[VOX] Error in streaming TTS:', error);
+        }
     } finally {
         voxIsSpeaking = false;
+        voxTtsAbortController = null;
 
         // Resume recording after TTS finishes
         if (wasRecording && voxMediaRecorder && voxMediaRecorder.state === 'paused') {
@@ -948,38 +1089,19 @@ async function speakText(text, language = 'en') {
     }
 }
 
-// Stop TTS
+// Stop TTS - flushes the audio queue, aborts the SSE stream, and tells the
+// backend to cancel any in-progress generation so the GPU stops immediately.
 async function stopVOXSpeaking() {
     try {
-        // Stop ALL browser audio immediately
-        if (voxCurrentAudio) {
-            try {
-                voxCurrentAudio.pause();
-                voxCurrentAudio.currentTime = 0;
-            } catch(e) {}
-            voxCurrentAudio = null;
-        }
+        // Flush the browser-side audio queue and abort the fetch
+        _flushAudioQueue();
 
-        // Stop ALL active audio elements
-        const audioCount = voxActiveAudioElements.length;
-        voxActiveAudioElements.forEach(audio => {
-            try {
-                audio.pause();
-                audio.currentTime = 0;
-            } catch(e) {}
-        });
-        voxActiveAudioElements = [];
-
-        if (audioCount > 0) {
-            console.log(`[VOX] Stopped ${audioCount} active audio element(s)`);
-        }
-
-        // Stop backend TTS and clear queue
+        // Tell backend to set its stop_event flag (cancels generate loop)
         await fetch('/api/vox_stop', { method: 'POST' });
 
         voxIsSpeaking = false;
         updateVOXStatus('Stopped');
-        console.log('[VOX] TTS stopped');
+        console.log('[VOX] TTS stopped (queue flushed + backend cancelled)');
     } catch (error) {
         console.error('Error stopping TTS:', error);
     }
@@ -1252,7 +1374,9 @@ async function deleteCurrentVoiceChat() {
     }
 }
 
-// Stop all active VOX operations without unloading models
+// Stop all active VOX operations without unloading models.
+// Flushes the audio queue, aborts any in-flight TTS SSE stream,
+// stops recording, and tells the backend to cancel generation.
 async function stopAllVOX() {
     console.log('[VOX] Stopping all operations...');
 
@@ -1265,25 +1389,8 @@ async function stopAllVOX() {
     }
     voxIsListening = false;
 
-    // Stop TTS playback immediately - ALL audio elements
-    if (voxCurrentAudio) {
-        try { voxCurrentAudio.pause(); } catch(e) {}
-        voxCurrentAudio = null;
-    }
-
-    // Stop ALL active audio elements
-    const audioCount = voxActiveAudioElements.length;
-    voxActiveAudioElements.forEach(audio => {
-        try {
-            audio.pause();
-            audio.currentTime = 0;
-        } catch(e) {}
-    });
-    voxActiveAudioElements = [];
-
-    if (audioCount > 0) {
-        console.log(`[VOX] Stopped ${audioCount} active audio element(s)`);
-    }
+    // Flush the streaming TTS audio queue + abort SSE fetch
+    _flushAudioQueue();
 
     voxIsSpeaking = false;
 
@@ -1296,7 +1403,7 @@ async function stopAllVOX() {
         voxSilenceTimeout = null;
     }
 
-    // Tell backend to stop inference
+    // Tell backend to stop ALL inference (LLM + TTS)
     try {
         await fetch('/api/stop_all_vox', { method: 'POST' });
     } catch(e) {}
@@ -1309,7 +1416,7 @@ async function stopAllVOX() {
     }
 
     updateVOXStatus('Stopped');
-    console.log('[VOX] All operations stopped');
+    console.log('[VOX] All operations stopped (queue flushed + backend cancelled)');
 }
 
 // Full teardown: stop everything AND unload STT/TTS/speech LLM from VRAM

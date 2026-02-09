@@ -6,12 +6,13 @@
       "DISCORD_WEBHOOK_URL": ""
     },
     "ollama_models": {
-      "CORE_OLLAMA_MODEL": "gpt-oss:20b",
-      "SUMMARIZATION_OLLAMA_MODEL": "gemma:4b",
-      "RELEVANCE_OLLAMA_MODEL": "gemma:4b",
+      "CORE_OLLAMA_MODEL": "",
+      "SUMMARIZATION_OLLAMA_MODEL": "",
+      "RELEVANCE_OLLAMA_MODEL": "",
       "EMBEDDING_OLLAMA_MODEL": "nomic-embed-text:latest",
-      "BACKUP_VISION_MODEL": "llava:7b",
-      "DEFAULT_OCR_MODEL": "llava:7b",
+      "BACKUP_VISION_MODEL": "",
+      "DEFAULT_OCR_MODEL": "",
+      "CHAT_NAMING_MODEL": "",
       "CHATTERBOX_TTS_MODEL_PATH": ""
     },
     "stt_model_path": "",
@@ -60,6 +61,7 @@
     "ACCEPT_IMAGE_FILE_TYPES": "png,jpg,jpeg,gif,bmp,pbm,pgm,ppm,avif,heic,heif,webp"
   },
   "voice_config": {
+    "VOX_MODEL": "",
     "WAKE_WORD": "potato",
     "SILENCE_THRESHOLD": 1.2,
     "SLEEP_WORDS": "stop,go to sleep,goodbye,exit, okay thanks, thank you, done, enough",

@@ -1,6 +1,6 @@
 # POTATO/main.py
 # The core of P.O.T.A.T.O -- Practical Omnipurpose Technical AI Tool Operator
-# Uses gpt-oss:20b as main model.
+# Uses core chat model as main model.
 ## Uses ollama module to interface with local LLMs.
 ## Uses langchain to manage chains, agents, and memory.(?)
 ## Uses a modular approach to add tools , utilities and functionalities. 
@@ -171,12 +171,13 @@ mcp_tools_schema = [
     }
 ]
 
-def simple_stream_test(messages, model="qwen3-vl:8b", enable_search=False, stealth_mode=False, custom_system_prompt="", images=None):
+def simple_stream_test(messages, model="", enable_search=False, stealth_mode=False, custom_system_prompt="", images=None, keep_alive=600):
     """
     Generator that handles the LLM Stream + Tool execution loop with thinking detection.
-    
+
     Args:
         messages: Chat history
+        keep_alive: Seconds to keep model loaded (default 600=10 min)
         model: Model name
         enable_search: Whether web search tools are available
         stealth_mode: Whether to operate in stealth mode (affects tool selection)
@@ -309,10 +310,11 @@ ALWAYS consider the full conversation history when determining what to search fo
     
     # 2. Start Chat
     stream = ollama.chat(
-        model=model, 
-        messages=messages, 
-        tools=active_tools, 
+        model=model,
+        messages=messages,
+        tools=active_tools,
         stream=True,
+        keep_alive=keep_alive,  # Keep model loaded (default 10 min, VOX uses 3 min)
         options={
             'repeat_penalty': 1.02,
             'num_gpu': 999  # Load all layers to GPU
@@ -648,7 +650,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                             else:
                                 # Tool failed - restart stream WITHOUT tool results to get natural response
                                 print("[TOOL EXECUTION] Tool failed, generating response without tool results")
-                                sub_stream = ollama.chat(model=model, messages=messages, tools=None, stream=True)
+                                sub_stream = ollama.chat(model=model, messages=messages, tools=None, stream=True, keep_alive=keep_alive)
                                 
                                 for sub in sub_stream:
                                     sub_msg = sub.get('message', {})

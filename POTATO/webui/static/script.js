@@ -2818,7 +2818,7 @@ async function uploadImageFile(fileOrInput) {
     
     // Check if we can process images
     if (!canProcessImages) {
-        appendMessage('Cannot upload images - no vision model available. Install llava:7b or similar via Ollama.', 'system');
+        appendMessage('Cannot upload images - no vision model available. Install a vision model like llava:7b or similar via Ollama.', 'system');
         return;
     }
     
@@ -3472,6 +3472,7 @@ function getSettingDescription(key) {
         'SUMMARIZE_RETRIEVED_DOCS': 'Summarize retrieved documents before using them for context generation',
         
         // Voice Config
+        'VOX_MODEL': 'Ollama model used for VOX voice chat (leave empty to use CORE_OLLAMA_MODEL)',
         'WAKE_WORD': 'Wake word for voice activation',
         'SILENCE_THRESHOLD': 'Silence threshold in seconds to detect end of speech',
         'SLEEP_WORDS': 'Comma-separated list of words/phrases to put the assistant to sleep',
@@ -3483,13 +3484,14 @@ function getSettingDescription(key) {
         'TTS_SYSTEM_PROMPT': 'System prompt specifically for TTS voice output - controls speaking style',
         
         // Ollama Models
-        'CORE_OLLAMA_MODEL': 'The main model used for core functionalities',
-        'SUMMARIZATION_OLLAMA_MODEL': 'Model used for summarization tasks',
-        'RELEVANCE_OLLAMA_MODEL': 'Model used for determining relevance during RAG',
+        'CORE_OLLAMA_MODEL': 'The main model used for core chat functionalities (required)',
+        'CHAT_NAMING_MODEL': 'Model used to generate chat titles (leave empty to use CORE_OLLAMA_MODEL)',
+        'SUMMARIZATION_OLLAMA_MODEL': 'Model used for summarization tasks (leave empty to use CORE_OLLAMA_MODEL)',
+        'RELEVANCE_OLLAMA_MODEL': 'Model used for determining relevance during RAG (leave empty to use CORE_OLLAMA_MODEL)',
         'EMBEDDING_OLLAMA_MODEL': 'Model used for generating text embeddings for local vector database',
-        'BACKUP_VISION_MODEL': 'Backup model for processing images when current model lacks vision capability (e.g., llava:7b)',
-        'DEFAULT_OCR_MODEL': 'Default model for OCR and image text extraction (e.g., llava:7b)',
-        'CHATTERBOX_TTS_MODEL_PATH': '(?) Path to custom TTS model for chatterbox mode',
+        'BACKUP_VISION_MODEL': 'Backup model for processing images when current model lacks vision capability',
+        'DEFAULT_OCR_MODEL': 'Default model for OCR and image text extraction',
+        'CHATTERBOX_TTS_MODEL_PATH': 'Path to custom TTS model for chatterbox mode (optional)',
         
         // API Endpoints
         'OLLAMA_API_URL': 'Your Ollama API endpoint URL',

@@ -116,6 +116,11 @@ def _get_model():
 
     return _model
 
+def preload_model():
+    """Preload TTS model to VRAM without generating audio. Called when speech detected."""
+    _get_model()  # This loads the model if not already loaded
+    print("[TTS] Model preloaded to VRAM")
+
 # Abbreviation-safe sentence splitter
 ABBREVIATIONS = [
     r'\bMr\.', r'\bMrs\.', r'\bMs\.', r'\bDr\.', r'\bProf\.', r'\bSr\.', r'\bJr\.',
@@ -124,7 +129,13 @@ ABBREVIATIONS = [
 ]
 
 def split_sentences(text: str) -> list[str]:
-    """Split text into sentences, group 3 by 3, overflow goes into previous group."""
+    """Split text into sentences, group 2-3 sentences per chunk for balanced sizes.
+
+    Uses dynamic chunking to avoid one huge chunk:
+    - Calculates optimal chunk size based on total sentence count
+    - Distributes remainder sentences across all chunks evenly
+    - Ensures all chunks are 2-3 sentences (never 1, never >3)
+    """
     text = text.strip()
     if not text:
         return []
@@ -147,18 +158,40 @@ def split_sentences(text: str) -> list[str]:
         if s:
             restored.append(s)
 
-    # If 3 or fewer sentences, return as is
-    if len(restored) <= 3:
+    total = len(restored)
+
+    # If 3 or fewer sentences, return as single chunk
+    if total <= 3:
         return [' '.join(restored)]
 
-    # Group sentences in chunks of 3
-    chunk_size = 3
-    groups = [restored[i:i+chunk_size] for i in range(0, len(restored), chunk_size)]
+    # Calculate how many chunks we need for balanced distribution
+    # Goal: all chunks 2-3 sentences, prefer 3 when possible
+    # If total % 3 == 0: all chunks get 3 sentences
+    # If total % 3 == 1: make 4 chunks of size 3,3,3,...,3,4 -> BAD!
+    #                    Better: split into chunks of size 2,3,3,3... or 3,3,3,...,2,2
+    # If total % 3 == 2: make chunks of size 3,3,3,...,3,2 -> last chunk has 2
 
-    # Merge the last group into the previous if it has fewer than chunk_size sentences
-    if len(groups[-1]) < chunk_size and len(groups) > 1:
-        groups[-2].extend(groups[-1])
-        groups.pop()
+    # Strategy: Use chunks of size 3, but if remainder is 1, use one chunk of size 2
+    # to avoid a tiny 1-sentence chunk or a huge merged chunk
+
+    remainder = total % 3
+
+    if remainder == 0:
+        # Perfect division by 3
+        chunk_size = 3
+        groups = [restored[i:i+chunk_size] for i in range(0, total, chunk_size)]
+    elif remainder == 1:
+        # Total = 3n+1 (e.g., 4, 7, 10, 13, ...)
+        # Split as: 2, 3, 3, 3, ... (first chunk has 2, rest have 3)
+        groups = [restored[0:2]]  # First chunk: 2 sentences
+        for i in range(2, total, 3):
+            groups.append(restored[i:i+3])
+    else:  # remainder == 2
+        # Total = 3n+2 (e.g., 5, 8, 11, 14, ...)
+        # Split as: 3, 3, 3, ..., 2 (all have 3 except last has 2)
+        chunk_size = 3
+        groups = [restored[i:i+chunk_size] for i in range(0, total, chunk_size)]
+        # Last group will naturally have 2 sentences
 
     # Join sentences back into strings
     return [' '.join(g) for g in groups]
@@ -180,6 +213,15 @@ _is_speaking = False
 
 # Cache audio prompt path string to avoid repeated conversions
 _audio_prompt_str = str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None
+
+def _get_cached_audio_prompt_path() -> str | None:
+    """Return the audio prompt path string, caching the file read on first call.
+
+    Chatterbox Turbo accepts audio_prompt_path as a string and loads it internally.
+    We cache the path string here.  The model itself caches the loaded waveform
+    after the first generate() call, so subsequent calls with the same path are fast.
+    """
+    return _audio_prompt_str
 
 def generate_worker(text_groups, audio_q):
     """Generate TTS audio chunks and put them in queue"""
@@ -420,6 +462,103 @@ def generate_tts_wav(text: str) -> bytes:
         torch.cuda.empty_cache()
 
     return buf.getvalue()
+
+
+def generate_tts_wav_streamed(text: str):
+    """Yield individual WAV-chunk bytes as each sentence group is generated.
+
+    This is the core of the streaming TTS pipeline:
+    - Splits text into 2-3 sentence groups (abbreviation-safe)
+    - Generates TTS for each group one at a time
+    - Yields (chunk_index, total_chunks, wav_bytes) after each group finishes
+    - Checks stop_event between every group so the caller can cancel instantly
+    - The browser can start playing chunk 0 while chunk 1 is being generated
+
+    Yields:
+        tuple(int, int, bytes):  (chunk_index, total_chunks, wav_bytes_for_this_chunk)
+    """
+    import io
+    import numpy as np
+    from scipy.io import wavfile
+
+    global _is_speaking
+    _is_speaking = True
+
+    try:
+        model = _get_model()
+        sample_rate = int(model.sr)
+        groups = split_sentences(text)
+        total = len(groups)
+
+        if total == 0:
+            return
+
+        # Clear stop flag from any previous run so we start clean
+        if stop_event.is_set():
+            stop_event.clear()
+
+        # Clear CUDA cache before starting a batch of generations
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        prompt_path = _get_cached_audio_prompt_path()
+
+        for idx, sentence in enumerate(groups):
+            # --- Check cancellation before generating each chunk ---
+            if stop_event.is_set() or shutdown_event.is_set():
+                print(f"[TTS-STREAM] Generation cancelled before chunk {idx}/{total}")
+                return
+
+            if not sentence.strip():
+                continue
+
+            try:
+                # Generate this chunk's audio
+                if device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        wav = model.generate(
+                            text=sentence,
+                            audio_prompt_path=prompt_path
+                        )
+                else:
+                    wav = model.generate(
+                        text=sentence,
+                        audio_prompt_path=prompt_path
+                    )
+
+                wav = wav.squeeze()
+                if wav.abs().max() > 1:
+                    wav = wav / wav.abs().max()
+
+                # Transfer to CPU and convert to int16 WAV bytes
+                audio_np = wav.cpu().float().numpy()
+                audio_int16 = (audio_np * 32767).astype(np.int16)
+
+                buf = io.BytesIO()
+                wavfile.write(buf, sample_rate, audio_int16)
+                wav_bytes = buf.getvalue()
+
+                print(f"[TTS-STREAM] Chunk {idx+1}/{total} ready "
+                      f"({len(sentence)} chars, {len(wav_bytes)} bytes)")
+
+                yield (idx, total, wav_bytes)
+
+            except Exception as e:
+                print(f"[TTS-STREAM] Error generating chunk {idx}: {e}")
+                # Skip this chunk, continue with next
+                continue
+
+        # Free CUDA temp memory after all chunks done
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+    except Exception as e:
+        print(f"[TTS-STREAM] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        _is_speaking = False
+
 
 # =========================
 # Control functions

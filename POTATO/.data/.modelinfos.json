@@ -109,7 +109,15 @@
     "detection_date": "2026-02-06T12:08:09.292930"
   },
   "qwen3-vl:8b": {
-    "vision": true
+    "vision": true,
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T18:07:50.951145"
   },
   "gemma3:4b": {
     "vision": true,
@@ -163,5 +171,42 @@
   },
   "deepseek-ocr:latest": {
     "vision": true
+  },
+  "phi4-mini:latest": {
+    "vision": false,
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T19:10:21.314931"
+  },
+  "dolphin-llama3:8b-v2.9-q4_K_M": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T19:18:28.488943"
+  },
+  "llama2-uncensored:7b-chat-q4_K_M": {
+    "can_think": "unknown",
+    "tool_calls": false,
+    "vision": "unknown",
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T19:37:59.756400"
   }
 }

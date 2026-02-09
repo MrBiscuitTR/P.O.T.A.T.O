@@ -82,9 +82,10 @@ log = logging.getLogger('werkzeug')
 
 class NoStatsFilter(logging.Filter):
     def filter(self, record):
-        return '/api/system_stats' not in record.getMessage()
+            msg = record.getMessage() or ""
+            return '/api/system_stats' not in msg and '/api/tts_is_speaking' not in msg
 
-log.addFilter(NoStatsFilter())
+log.addFilter(NoStatsFilter()) # Very verbose, so filter out these endpoints
 
 # --- CONFIGURATION ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -206,36 +207,53 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False):
             # Only generate AI title if we have BOTH messages (not just user message)
             if user_msg and ai_response:
                 try:
-                    # Use qwen2.5-coder:7b to generate a concise title
+                    # Get chat naming model from settings, fallback to current chat model
                     import ollama
-                    
-                    context = f"User: {user_msg[:200]}"
-                    context += f"\nAssistant: {ai_response[:200]}"
-                    
-                    response = ollama.chat(
-                        model='qwen2.5-coder:7b',
-                        messages=[{
-                            'role': 'system',
-                            'content': 'Generate a short chat title (max 7 words, no quotes). Only output the title, nothing else. Be specific and descriptive.'
-                        }, {
-                            'role': 'user',
-                            'content': context
-                        }],
-                        options={'num_predict': 30}  # Limit response length
-                    )
-                    title = response['message']['content'].strip().strip('"\'')
-                    
-                    # Truncate if too long
-                    words = title.split()
-                    if len(words) > 7:
-                        title = ' '.join(words[:7])
-                    
-                    # Unload qwen2.5-coder:7b to free VRAM
-                    print(f"[CHAT] Generated title: {title}")
-                    print("[CHAT] Unloading qwen2.5-coder:7b...")
-                    ollama.chat(model='qwen2.5-coder:7b', messages=[], keep_alive=0)
-                    print("[CHAT] Title generator unloaded")
-                    
+                    settings = load_settings()
+                    naming_model = settings.get('configuration', {}).get('ollama_models', {}).get('CHAT_NAMING_MODEL', '')
+
+                    # If naming model not set, fallback to current chat model or core model
+                    if not naming_model:
+                        naming_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
+
+                    # Only proceed if we have a model configured
+                    if naming_model:
+                        context = f"User: {user_msg[:200]}"
+                        context += f"\nAssistant: {ai_response[:200]}"
+
+                        response = ollama.chat(
+                            model=naming_model,
+                            messages=[{
+                                'role': 'system',
+                                'content': 'Generate a short chat title (max 6 words, no quotes). Only output the title, nothing else. Be specific and descriptive.'
+                            }, {
+                                'role': 'user',
+                                'content': context
+                            }],
+                            options={'num_predict': 30}  # Limit response length
+                        )
+                        title = response['message']['content'].strip().strip('"\'')
+
+                        # Truncate if too long
+                        words = title.split()
+                        if len(words) > 7:
+                            title = ' '.join(words[:7])
+
+                        print(f"[CHAT] Generated title: {title}")
+
+                        # Unload naming model to free VRAM (only if it's NOT the core model)
+                        core_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
+                        if naming_model != core_model:
+                            print(f"[CHAT] Unloading {naming_model}...")
+                            ollama.chat(model=naming_model, messages=[], keep_alive=0)
+                            print("[CHAT] Title generator unloaded")
+                    else:
+                        # No model configured - use fallback title
+                        if existing_title:
+                            title = existing_title
+                        elif user_msg:
+                            title = user_msg[:27] + "..." if len(user_msg) > 27 else user_msg
+
                 except Exception as e:
                     print(f"[CHAT] Error generating AI title: {e}")
                     # Fallback to placeholder or existing
@@ -509,7 +527,7 @@ def check_model_is_vision(model_name):
         return {'is_vision': is_vision, 'known': True}
     
     # Fall back to pattern matching
-    vision_patterns = ['vl', 'vision', 'llava', 'bakllava', 'moondream', 'minicpm-v', 'deepseek-ocr']
+    vision_patterns = ['vl', 'vision', 'llava', 'moondream', 'minicpm-v', 'deepseek-ocr']
     name_lower = model_name.lower()
     for pattern in vision_patterns:
         if pattern in name_lower:
@@ -1843,6 +1861,20 @@ def transcribe():
             print(f"Failed to remove temp file: {e}")
         
         if result['success']:
+            # Preload TTS in background for faster vocal response
+            language = result.get('language', 'en')
+            import threading
+            def preload_tts():
+                try:
+                    if language == 'en':
+                        from POTATO.components.vocal_tools.clonevoice_turbo import preload_model
+                    else:
+                        from POTATO.components.vocal_tools.clonevoice_multilanguage import preload_model
+                    preload_model(language)
+                except Exception as e:
+                    print(f"[TTS] Preload error: {e}")
+            threading.Thread(target=preload_tts, daemon=True).start()
+
             return jsonify({"text": result['text'], "language": result['language']})
         else:
             error_msg = result.get('error', 'Unknown transcription error')
@@ -2087,8 +2119,12 @@ def stop_all_vox():
 
         # Get current VOX model and stop it
         settings = load_settings()
-        vox_model = settings.get('voice_config', {}).get('VOX_MODEL', 'dolphin-llama3:8b')
-        stop_ollama_inference(vox_model)
+        vox_model = settings.get('voice_config', {}).get('VOX_MODEL', '')
+        # Fallback to CORE_OLLAMA_MODEL if VOX_MODEL not set
+        if not vox_model:
+            vox_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
+        if vox_model:
+            stop_ollama_inference(vox_model)
 
         # Reset stop flag
         import threading
@@ -2706,7 +2742,7 @@ def vox_model_endpoint():
     """Get or set the VOX chat model"""
     settings = load_settings()
     if request.method == 'GET':
-        model = settings.get('voice_config', {}).get('VOX_MODEL', 'dolphin-llama3:8b')
+        model = settings.get('voice_config', {}).get('VOX_MODEL', '')
         models = get_ollama_models()
         return jsonify({"model": model, "models": models})
     else:
@@ -2736,8 +2772,11 @@ def vox_stream():
                 return
             
             settings = load_settings()
-            vox_model = settings.get('voice_config', {}).get('VOX_MODEL', 'dolphin-llama3:8b')
-            
+            vox_model = settings.get('voice_config', {}).get('VOX_MODEL', '')
+            # Fallback to CORE_OLLAMA_MODEL if VOX_MODEL not set
+            if not vox_model:
+                vox_model = settings.get('configuration', {}).get('ollama_models', {}).get('CORE_OLLAMA_MODEL', '')
+
             # NOTE: Interrupt word detection removed from backend - handled in frontend only
             # This prevents legitimate sentences containing these words from being blocked
             # (e.g., "mate let me give it another shot" shouldn't be considered an interrupt)
@@ -2761,9 +2800,9 @@ def vox_stream():
             # Yield session ID first
             yield f"data: {json.dumps({'session_id': session_id, 'user_text': user_text})}\n\n"
             
-            # Stream AI response
+            # Stream AI response (keep_alive=180 for VOX - 3 minutes)
             accumulated_response = ""
-            for chunk in simple_stream_test(history, model=vox_model, enable_search=False, stealth_mode=False):
+            for chunk in simple_stream_test(history, model=vox_model, enable_search=False, stealth_mode=False, keep_alive=180):
                 if 'content' in chunk:
                     accumulated_response += chunk['content']
                     yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
@@ -2837,6 +2876,60 @@ def vox_speak_wav():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/api/vox_speak_wav_stream', methods=['POST'])
+def vox_speak_wav_stream():
+    """Stream TTS audio chunk-by-chunk as Server-Sent Events.
+
+    Each SSE event carries one WAV audio chunk (base64-encoded) generated from
+    2-3 sentences of the input text.  The browser can start playing chunk 0
+    while chunk 1 is still being generated, giving near-instant playback.
+
+    Request JSON:  { "text": "...", "language": "en" }
+
+    SSE events:
+      data: {"chunk": <index>, "total": <n>, "audio_b64": "<base64-wav>"}
+      data: {"done": true}
+      data: {"error": "..."}    (on failure)
+    """
+    import base64
+
+    def generate():
+        try:
+            data = request.json
+            text = data.get('text')
+            language = data.get('language', 'en')
+
+            if not text:
+                yield f"data: {json.dumps({'error': 'No text provided'})}\n\n"
+                return
+
+            if language == 'en':
+                # Use the new streaming generator for English (Chatterbox Turbo)
+                from POTATO.components.vocal_tools.clonevoice_turbo import generate_tts_wav_streamed
+                for chunk_idx, total_chunks, wav_bytes in generate_tts_wav_streamed(text):
+                    audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
+                    yield f"data: {json.dumps({'chunk': chunk_idx, 'total': total_chunks, 'audio_b64': audio_b64})}\n\n"
+            else:
+                # Multilingual: use streaming generator if available, else fall back to single chunk
+                from POTATO.components.vocal_tools.clonevoice_multilanguage import generate_tts_wav_streamed_multilingual
+                for chunk_idx, total_chunks, wav_bytes in generate_tts_wav_streamed_multilingual(text, language=language):
+                    audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
+                    yield f"data: {json.dumps({'chunk': chunk_idx, 'total': total_chunks, 'audio_b64': audio_b64})}\n\n"
+
+            # Signal completion
+            yield f"data: {json.dumps({'done': True})}\n\n"
+
+        except Exception as e:
+            print(f"[TTS-STREAM] Endpoint error: {e}")
+            import traceback
+            traceback.print_exc()
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
 @app.route('/api/vox_stop', methods=['POST'])
 @app.route('/api/vox_stop_speak', methods=['POST'])
 def vox_stop():
@@ -2905,7 +2998,7 @@ def vox_core():
     session_id = data.get('session_id', str(uuid.uuid4()))
     
     settings = load_settings()
-    vox_model = 'dolphin-llama3:8b'
+    vox_model = ''
     
     # Transcribe audio
     stt_result = listen_stt(audio_path)

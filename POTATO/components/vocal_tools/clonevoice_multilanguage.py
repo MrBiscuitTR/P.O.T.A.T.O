@@ -31,7 +31,7 @@ TEMP_DIR.mkdir(exist_ok=True)
 SAMPLES_DIR = SCRIPT_DIR / "samples"
 SAMPLES_DIR.mkdir(exist_ok=True)
 
-REFERENCE_PATH = SAMPLES_DIR / "Wheatley.wav"
+REFERENCE_PATH = SAMPLES_DIR / "dilara-tr.wav"
 if not REFERENCE_PATH.is_file():
     print(f"Note: Reference audio missing → cloning disabled.")
     REFERENCE_PATH = None
@@ -139,6 +139,14 @@ def _get_multilingual_model():
                 _multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=device)
                 print("Multilingual model loaded.")
     return _multilingual_model
+
+def preload_model(language: str = "en"):
+    """Preload TTS model to VRAM. Called when speech detected."""
+    if language.lower() == "en":
+        _get_english_model()
+    else:
+        _get_multilingual_model()
+    print(f"[TTS] {language} model preloaded to VRAM")
 
 def unload_models():
     """Unload both models from memory"""
@@ -287,6 +295,113 @@ def generate_tts_wav_multilingual(text: str, language: str = "en") -> bytes:
     buf = io.BytesIO()
     wavfile.write(buf, sample_rate, audio_int16)
     return buf.getvalue()
+
+
+# Stop event imported from turbo module so both share the same flag.
+# This lets the frontend's stop button cancel multilingual generation too.
+def _get_stop_event():
+    """Import the stop_event from clonevoice_turbo so we share one flag."""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_turbo import stop_event
+        return stop_event
+    except ImportError:
+        return None
+
+
+def generate_tts_wav_streamed_multilingual(text: str, language: str = "en"):
+    """Yield individual WAV-chunk bytes for each sentence group (multilingual).
+
+    Mirrors the streaming interface of clonevoice_turbo.generate_tts_wav_streamed()
+    so the SSE endpoint can treat both identically.
+
+    Yields:
+        tuple(int, int, bytes):  (chunk_index, total_chunks, wav_bytes)
+    """
+    import io
+    from scipy.io import wavfile
+
+    text = text.strip()
+    if not text:
+        return
+
+    lang = language.lower().strip()
+    if lang not in SUPPORTED_LANGUAGES and lang != "en":
+        lang = "en"
+
+    model = _get_english_model() if lang == "en" else _get_multilingual_model()
+    lang_id = None if lang == "en" else lang
+    sample_rate = int(model.sr)
+    sentences = split_sentences(text)
+
+    # Group sentences into chunks of 2-3 for balanced sizes (same strategy as turbo)
+    total = len(sentences)
+    if total <= 3:
+        groups = [' '.join(sentences)] if sentences else []
+    else:
+        # Calculate balanced distribution to avoid one huge chunk
+        remainder = total % 3
+
+        if remainder == 0:
+            # Perfect division by 3: all chunks get 3 sentences
+            chunk_size = 3
+            raw_groups = [sentences[i:i+chunk_size] for i in range(0, total, chunk_size)]
+        elif remainder == 1:
+            # Total = 3n+1: split as 2,3,3,3,... (first chunk has 2, rest have 3)
+            raw_groups = [sentences[0:2]]
+            for i in range(2, total, 3):
+                raw_groups.append(sentences[i:i+3])
+        else:  # remainder == 2
+            # Total = 3n+2: split as 3,3,3,...,2 (all have 3 except last has 2)
+            chunk_size = 3
+            raw_groups = [sentences[i:i+chunk_size] for i in range(0, total, chunk_size)]
+
+        groups = [' '.join(g) for g in raw_groups]
+
+    total = len(groups)
+    if total == 0:
+        return
+
+    stop_evt = _get_stop_event()
+
+    for idx, sentence in enumerate(groups):
+        # Check cancellation between chunks
+        if stop_evt and stop_evt.is_set():
+            print(f"[TTS-ML-STREAM] Cancelled before chunk {idx}/{total}")
+            return
+
+        if not sentence.strip():
+            continue
+
+        try:
+            with torch.no_grad(), \
+                 torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else torch.no_grad():
+                wav = model.generate(
+                    text=sentence,
+                    language_id=lang_id,
+                    audio_prompt_path=str(REFERENCE_PATH) if REFERENCE_PATH else None,
+                    temperature=TEMPERATURE,
+                    exaggeration=EXAGGERATION,
+                )
+
+            wav_np = wav.squeeze().cpu().float().numpy()
+            max_abs_val = np.max(np.abs(wav_np))
+            if max_abs_val > 1.0:
+                wav_np /= max_abs_val
+
+            audio_int16 = (wav_np * 32767).astype(np.int16)
+            buf = io.BytesIO()
+            wavfile.write(buf, sample_rate, audio_int16)
+            wav_bytes = buf.getvalue()
+
+            print(f"[TTS-ML-STREAM] Chunk {idx+1}/{total} ready "
+                  f"({len(sentence)} chars, {len(wav_bytes)} bytes)")
+
+            yield (idx, total, wav_bytes)
+
+        except Exception as e:
+            print(f"[TTS-ML-STREAM] Error generating chunk {idx}: {e}")
+            continue
+
 
 # Interactive mode
 if __name__ == "__main__":
