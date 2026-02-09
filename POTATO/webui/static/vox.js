@@ -1,5 +1,5 @@
 // VOX - Voice Interaction Module
-// Note: voxLanguage is defined in script.js and shared globally
+// Note: voxLanguage is defined in script.js and shared globally (for TTS)
 let voxSessionId = null;
 let voxIsListening = false;
 let voxIsSpeaking = false;
@@ -9,10 +9,14 @@ let voxAudioChunks = [];
 let voxSelectedDevice = null;
 let voxSelectedOutputDevice = null;
 let voxCurrentAudio = null;
+let voxActiveAudioElements = [];  // Track ALL active audio elements
 let whisperLoaded = false;
 let whisperLoading = false;
 let voxSilenceTimeout = null;
 let voxLastAudioLevel = 0;
+
+// Transcription language (separate from TTS language)
+let voxTranscriptionLanguage = 'auto';  // Default to auto-detect
 
 // CRITICAL: Global stop flag to prevent continuous mode from restarting
 let voxShouldStop = false;
@@ -143,30 +147,33 @@ async function loadTTSModels(language = 'en') {
 // Initialize VOX
 async function initVOX() {
     try {
-        // Load Whisper model first with progress
-        const whisperOk = await loadWhisperModel();
-        if (!whisperOk) return;
-        
-        // Load TTS models based on selected language
-        const language = document.getElementById('vox-language')?.value || 'en';
-        await loadTTSModels(language);
-        
-        // Load audio devices
+        // Load browser-level devices FIRST (immediate, no server dependency)
         await loadAudioDevices();
         await loadOutputDevices();
-        
-        // Load voice chat history
+
+        // Load VOX model picker (fast API call)
+        await loadVOXModel();
+
+        // Load voice chat history (fast)
         await loadVoiceChatList();
-        
+
         // Initialize audio context
         voxAudioContext = new (window.AudioContext || window.webkitAudioContext)();
-        
+
+        // Load Whisper model with progress (slow - loads model into VRAM)
+        const whisperOk = await loadWhisperModel();
+        if (!whisperOk) return;
+
+        // Load TTS models based on selected language (slow - loads model into VRAM)
+        const language = document.getElementById('vox-tts-language')?.value || 'en';
+        await loadTTSModels(language);
+
         // Start interrupt monitoring
         if (window.VOXInterrupt) {
             window.VOXInterrupt.start();
             console.log('[VOX] Interrupt monitoring started');
         }
-        
+
         console.log('VOX initialized');
     } catch (error) {
         console.error('Error initializing VOX:', error);
@@ -264,6 +271,47 @@ async function loadOutputDevices() {
 function setOutputDevice(deviceId, deviceName) {
     voxSelectedOutputDevice = deviceId;
     console.log(`[VOX] Output device set to: ${deviceName || deviceId || 'default'}`);
+}
+
+// Load VOX model list and current selection
+async function loadVOXModel() {
+    try {
+        const response = await fetch('/api/vox_model');
+        const data = await response.json();
+        const select = document.getElementById('vox-model-select');
+        if (!select) return;
+        select.innerHTML = '';
+        (data.models || []).forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            if (m === data.model) opt.selected = true;
+            select.appendChild(opt);
+        });
+        if (data.models && data.models.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = 'No models found';
+            select.appendChild(opt);
+        }
+    } catch (error) {
+        console.error('[VOX] Error loading model list:', error);
+    }
+}
+
+// Set VOX model
+async function setVOXModel(model) {
+    if (!model) return;
+    try {
+        await fetch('/api/vox_model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model })
+        });
+        console.log(`[VOX] Model set to: ${model}`);
+    } catch (error) {
+        console.error('[VOX] Error setting model:', error);
+    }
 }
 
 // Start voice recording
@@ -431,11 +479,21 @@ async function startVOXRecording() {
             }
         };
         
+        // Use a flag to prevent duplicate onstop processing
+        let onstopProcessed = false;
+
         voxMediaRecorder.onstop = async () => {
+            // CRITICAL: Prevent duplicate processing
+            if (onstopProcessed) {
+                console.log('[VOX] onstop already processed, ignoring duplicate call');
+                return;
+            }
+            onstopProcessed = true;
+
             clearInterval(volumeCheckInterval);
             audioContext.close();
             stream.getTracks().forEach(track => track.stop());
-            
+
             // Only transcribe if significant audio was detected
             if (!hasSignificantAudio) {
                 updateVOXStatus('No significant audio detected - Ready');
@@ -447,20 +505,20 @@ async function startVOXRecording() {
                 }
                 return;
             }
-            
+
             // Convert WebM to WAV using Web Audio API (NO FFMPEG)
             try {
                 const audioBlob = new Blob(voxAudioChunks, { type: 'audio/webm' });
                 const arrayBuffer = await audioBlob.arrayBuffer();
-                
+
                 // Decode audio
                 const newAudioContext = new (window.AudioContext || window.webkitAudioContext)();
                 const audioBuffer = await newAudioContext.decodeAudioData(arrayBuffer);
-                
+
                 // Convert to WAV
                 const wavBlob = await audioBufferToWav(audioBuffer);
                 await transcribeAndRespond(wavBlob);
-                
+
                 newAudioContext.close();
             } catch (error) {
                 console.error('[VOX] Audio conversion error:', error);
@@ -533,7 +591,7 @@ async function transcribeAndRespond(audioBlob) {
                 const formData = new FormData();
                 const ext = audioData.audio.type.includes('wav') ? 'wav' : 'webm';
                 formData.append('audio', audioData.audio, `interrupt-check.${ext}`);
-                formData.append('language', voxLanguage || 'en');
+                formData.append('language_mode', voxTranscriptionLanguage || 'auto');
                 
                 const response = await fetch('/api/transcribe_realtime', {
                     method: 'POST',
@@ -577,7 +635,7 @@ async function transcribeAndRespond(audioBlob) {
         const formData = new FormData();
         const ext = audioBlob.type.includes('wav') ? 'wav' : 'webm';
         formData.append('audio', audioBlob, `recording.${ext}`);
-        formData.append('language', voxLanguage || 'en');
+        formData.append('language_mode', voxTranscriptionLanguage || 'auto');
         
         console.log('[VOX] Sending audio to transcription endpoint...');
         
@@ -856,10 +914,23 @@ async function speakText(text, language = 'en') {
         }
 
         voxCurrentAudio = audio;
+        voxActiveAudioElements.push(audio);  // Track all active audio
 
         await new Promise((resolve, reject) => {
-            audio.onended = () => { URL.revokeObjectURL(url); resolve(); };
-            audio.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
+            audio.onended = () => {
+                URL.revokeObjectURL(url);
+                // Remove from active list
+                const index = voxActiveAudioElements.indexOf(audio);
+                if (index > -1) voxActiveAudioElements.splice(index, 1);
+                resolve();
+            };
+            audio.onerror = (e) => {
+                URL.revokeObjectURL(url);
+                // Remove from active list
+                const index = voxActiveAudioElements.indexOf(audio);
+                if (index > -1) voxActiveAudioElements.splice(index, 1);
+                reject(e);
+            };
             audio.play().catch(reject);
         });
 
@@ -880,9 +951,35 @@ async function speakText(text, language = 'en') {
 // Stop TTS
 async function stopVOXSpeaking() {
     try {
+        // Stop ALL browser audio immediately
+        if (voxCurrentAudio) {
+            try {
+                voxCurrentAudio.pause();
+                voxCurrentAudio.currentTime = 0;
+            } catch(e) {}
+            voxCurrentAudio = null;
+        }
+
+        // Stop ALL active audio elements
+        const audioCount = voxActiveAudioElements.length;
+        voxActiveAudioElements.forEach(audio => {
+            try {
+                audio.pause();
+                audio.currentTime = 0;
+            } catch(e) {}
+        });
+        voxActiveAudioElements = [];
+
+        if (audioCount > 0) {
+            console.log(`[VOX] Stopped ${audioCount} active audio element(s)`);
+        }
+
+        // Stop backend TTS and clear queue
         await fetch('/api/vox_stop', { method: 'POST' });
+
         voxIsSpeaking = false;
         updateVOXStatus('Stopped');
+        console.log('[VOX] TTS stopped');
     } catch (error) {
         console.error('Error stopping TTS:', error);
     }
@@ -1168,11 +1265,26 @@ async function stopAllVOX() {
     }
     voxIsListening = false;
 
-    // Stop TTS playback immediately
+    // Stop TTS playback immediately - ALL audio elements
     if (voxCurrentAudio) {
         try { voxCurrentAudio.pause(); } catch(e) {}
         voxCurrentAudio = null;
     }
+
+    // Stop ALL active audio elements
+    const audioCount = voxActiveAudioElements.length;
+    voxActiveAudioElements.forEach(audio => {
+        try {
+            audio.pause();
+            audio.currentTime = 0;
+        } catch(e) {}
+    });
+    voxActiveAudioElements = [];
+
+    if (audioCount > 0) {
+        console.log(`[VOX] Stopped ${audioCount} active audio element(s)`);
+    }
+
     voxIsSpeaking = false;
 
     // Stop continuous transcription interval
@@ -1206,19 +1318,47 @@ async function teardownVOX() {
 
     await stopAllVOX();
 
-    // Unload STT
+    // Unload STT with proper await and logging
     try {
-        await fetch('/api/unload_stt', { method: 'POST' });
+        console.log('[VOX] Unloading STT...');
+        const sttResponse = await fetch('/api/unload_stt', { method: 'POST' });
+        const sttResult = await sttResponse.json();
+        console.log('[VOX] STT unload result:', sttResult);
         window.sttManuallyUnloaded = true;
         window.whisperModelLoaded = false;
         whisperLoaded = false;
-    } catch(e) {}
+    } catch(e) {
+        console.error('[VOX] STT unload error:', e);
+    }
 
-    // Unload TTS
+    // Unload TTS with proper await and logging
     try {
-        await fetch('/api/unload_tts', { method: 'POST' });
+        console.log('[VOX] Unloading TTS...');
+        const ttsResponse = await fetch('/api/unload_tts', { method: 'POST' });
+        const ttsResult = await ttsResponse.json();
+        console.log('[VOX] TTS unload result:', ttsResult);
         window.ttsManuallyUnloaded = true;
-    } catch(e) {}
+    } catch(e) {
+        console.error('[VOX] TTS unload error:', e);
+    }
+
+    // Unload VOX Ollama chat model from VRAM
+    try {
+        console.log('[VOX] Unloading VOX Ollama model...');
+        const settings = await fetch('/api/vox_model').then(r => r.json());
+        const voxModel = settings.model;
+        if (voxModel) {
+            const modelResponse = await fetch('/api/unload_model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model: voxModel })
+            });
+            const modelResult = await modelResponse.json();
+            console.log(`[VOX] Unloaded VOX model ${voxModel}:`, modelResult);
+        }
+    } catch(e) {
+        console.error('[VOX] Could not unload VOX model:', e);
+    }
 
     console.log('[VOX] Teardown complete');
 }
@@ -1266,17 +1406,28 @@ async function unloadTTS() {
         voxIsSpeaking = false;
 
         updateVOXStatus('Unloading TTS...');
+        console.log('[TTS] Sending unload request...');
+
         const response = await fetch('/api/unload_tts', { method: 'POST' });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
         const result = await response.json();
+        console.log('[TTS] Unload response:', result);
+
         if (result.success) {
             window.ttsManuallyUnloaded = true;
-            updateVOXStatus('TTS unloaded');
+            updateVOXStatus('TTS unloaded - Ready');
+            console.log('[TTS] Unload successful');
         } else {
-            updateVOXStatus('TTS unload error');
+            updateVOXStatus(`TTS unload error: ${result.error || 'Unknown'}`);
+            console.error('[TTS] Unload failed:', result);
         }
     } catch (error) {
         console.error('[TTS] Unload error:', error);
-        updateVOXStatus('TTS unload failed');
+        updateVOXStatus(`TTS unload failed: ${error.message}`);
     }
 }
 
@@ -1290,6 +1441,10 @@ if (typeof window.VOX === 'undefined') {
         stopAll: stopAllVOX,
         clearChat: clearVOXChat,
         setLanguage: (lang) => { voxLanguage = lang; },
+        setTranscriptionLanguage: (lang) => {
+            voxTranscriptionLanguage = lang;
+            console.log(`[VOX] Transcription language set to: ${lang}`);
+        },
         setAudioDevice: setAudioDevice,
         loadTTSModels: loadTTSModels  // Expose for tab switching preload
     };
@@ -1311,3 +1466,4 @@ window.teardownVOX = teardownVOX;
 // Export device functions globally for HTML onchange handlers
 window.setAudioDevice = setAudioDevice;
 window.setOutputDevice = setOutputDevice;
+window.setVOXModel = setVOXModel;

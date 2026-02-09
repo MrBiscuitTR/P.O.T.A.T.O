@@ -115,17 +115,26 @@ def get_whisper_pipeline():
     
     model_id = "openai/whisper-large-v3"
     
-    print(f"Loading Whisper model on {device}...")
-    
+    print(f"Loading Whisper model directly to {device}...")
+
+    # Load directly to CUDA to avoid using system RAM
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id,
         torch_dtype=torch_dtype,
         use_safetensors=True,
-        local_files_only=True
-    ).to(device)
-    
+        local_files_only=True,
+        device_map="cuda" if device == "cuda" else None,
+        low_cpu_mem_usage=True  # Minimize RAM usage during loading
+    )
+
+    # Set to eval mode and disable gradients to save RAM
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+
     processor = AutoProcessor.from_pretrained(model_id, local_files_only=True)
     
+    # When using device_map, don't pass device to pipeline (accelerate handles it)
     _whisper_pipeline = pipeline(
         "automatic-speech-recognition",
         model=model,
@@ -135,11 +144,42 @@ def get_whisper_pipeline():
         chunk_length_s=30,
         batch_size=16,
         torch_dtype=torch_dtype,
-        device=device,
+        # No device parameter - model already on CUDA via device_map
     )
     
     print("Whisper model loaded successfully")
     return _whisper_pipeline
+
+
+def unload_whisper_model():
+    """Unload Whisper model from VRAM and free memory"""
+    global _whisper_pipeline
+
+    try:
+        if _whisper_pipeline is not None:
+            # Delete the pipeline and its components
+            del _whisper_pipeline
+            _whisper_pipeline = None
+
+            # Force garbage collection
+            import gc
+            gc.collect()
+
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+            print("→ Whisper model unloaded from VRAM")
+            return True
+        else:
+            print("[Whisper] Model already unloaded")
+            return True
+    except Exception as e:
+        print(f"[Whisper] Error unloading model: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def transcribe_audio_chunk(audio_data: np.ndarray, sample_rate: int, language: str = "en") -> str:
@@ -156,22 +196,23 @@ def transcribe_audio_chunk(audio_data: np.ndarray, sample_rate: int, language: s
     """
     try:
         pipe = get_whisper_pipeline()
-        
+
         # Whisper expects 16kHz audio
         if sample_rate != 16000:
             # Resample (simple decimation - for production use scipy.signal.resample)
             audio_data = audio_data[::int(sample_rate / 16000)]
-        
+
         # Ensure audio is 1D
         if audio_data.ndim > 1:
             audio_data = audio_data.mean(axis=1)
-        
-        # Transcribe
-        result = pipe(
-            audio_data.astype(np.float32),
-            generate_kwargs={"language": language}
-        )
-        
+
+        # Transcribe with no_grad to save RAM
+        with torch.no_grad():
+            result = pipe(
+                audio_data.astype(np.float32),
+                generate_kwargs={"language": language}
+            )
+
         return result['text'].strip()
     
     except Exception as e:

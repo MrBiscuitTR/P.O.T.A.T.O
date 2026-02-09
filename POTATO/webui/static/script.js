@@ -3565,12 +3565,6 @@ function renderSystemPromptsTab(container) {
             label: 'Chat System Prompt',
             description: 'Custom instructions prepended to all text chat conversations. This allows you to customize the AI\'s personality and behavior for text-based interactions.',
             placeholder: 'e.g., You are a helpful AI assistant...'
-        },
-        {
-            key: 'TTS_SYSTEM_PROMPT',
-            label: 'TTS System Prompt',
-            description: 'System prompt specifically for TTS voice output - controls speaking style, tone, and how the AI formats text for speech.',
-            placeholder: 'e.g., You are a human-like assistant speaking naturally...'
         }
     ];
     

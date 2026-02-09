@@ -56,10 +56,12 @@ print(f"Device: {device}")
 if device == "cuda":
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-# Audio device selection (unchanged)
+# Audio device selection (lazy - only when needed)
 selected_device = None
+_device_initialized = False
 
 def select_output_device():
+    """Select output device - only call in interactive mode (__main__)"""
     global selected_device
     print("\n=== Audio output devices ===")
     devices = sd.query_devices()
@@ -92,7 +94,24 @@ def select_output_device():
     sd.default.device = (None, selected_device)
     print(f"Using: [{selected_device}] {devices[selected_device]['name']}\n")
 
-select_output_device()
+def _ensure_device_initialized():
+    """Ensure device is set to default when used as library (non-interactive)"""
+    global selected_device, _device_initialized
+    if not _device_initialized:
+        # Use system default device when imported as library
+        default_output = sd.default.device[1]
+        if default_output is not None:
+            selected_device = default_output
+        else:
+            # Fallback: find first output device
+            devices = sd.query_devices()
+            output_devices = [i for i, d in enumerate(devices) if d['max_output_channels'] > 0]
+            selected_device = output_devices[0] if output_devices else None
+        _device_initialized = True
+        if selected_device is not None:
+            print(f"[TTS] Using default audio device: {sd.query_devices(selected_device)['name']}")
+
+# DO NOT call select_output_device() at import time - only in __main__ block
 
 # Models loaded on-demand, not at import time
 _english_model = None
@@ -167,6 +186,9 @@ def split_sentences(text: str) -> list[str]:
 
 # Main speak function
 def speak(text: str, language: str = "en"):
+    # Ensure device is initialized (uses default when imported as library)
+    _ensure_device_initialized()
+
     text = text.strip()
     if not text:
         return
@@ -271,6 +293,9 @@ if __name__ == "__main__":
     print("Chatterbox TTS – Offline real-time (English + Multilingual)")
     print("  Text → Enter    (or text | lang e.g. Merhaba | tr)")
     print("  Empty / Ctrl+C → quit\n")
+
+    # Only prompt for device selection in interactive mode
+    select_output_device()
 
     while True:
         try:

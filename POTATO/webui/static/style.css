@@ -3442,6 +3442,7 @@ html, body {
   
   .vox-chat-window {
     min-height: 300px;
+    max-height: 50vh;
   }
   
   .vox-message {

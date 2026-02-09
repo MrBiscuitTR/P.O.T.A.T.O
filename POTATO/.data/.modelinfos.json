@@ -112,13 +112,29 @@
     "vision": true
   },
   "gemma3:4b": {
-    "vision": true
+    "vision": true,
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T01:52:01.295240"
   },
   "qwen2.5-coder:7b": {
     "vision": false
   },
   "llama3.1:8b": {
-    "vision": false
+    "vision": false,
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T01:49:03.538035"
   },
   "gpt-oss:20b": {
     "vision": false,
@@ -132,9 +148,20 @@
     "detection_date": "2026-02-05T01:53:15.137474"
   },
   "mistral:7b": {
-    "vision": false
+    "vision": false,
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-09T01:47:13.872041"
   },
   "glm-ocr:latest": {
+    "vision": true
+  },
+  "deepseek-ocr:latest": {
     "vision": true
   }
 }

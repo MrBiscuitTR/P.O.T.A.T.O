@@ -696,11 +696,17 @@ def speak_text(text, language='en'):
         tts['speak'](text, language=language)
 
 def stop_tts():
-    """Stop all TTS"""
-    if _tts_turbo_model:
-        _tts_turbo_model['stop']()
-    if _tts_multilingual_model:
-        _tts_multilingual_model['stop']()
+    """Stop all TTS playback immediately"""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_turbo import stop_current_tts
+        stop_current_tts()
+    except Exception as e:
+        print(f"[TTS] Error stopping turbo TTS: {e}")
+    try:
+        from POTATO.components.vocal_tools.clonevoice_multilanguage import stop_current_tts as stop_multi_tts
+        stop_multi_tts()
+    except Exception:
+        pass
 
 def unload_tts_models():
     """Unload all TTS models from VRAM"""
@@ -1963,15 +1969,28 @@ def transcribe_audio():
 @app.route('/api/stop', methods=['POST'])
 def stop_inference():
     """Stop ongoing inference"""
+    global _stop_generation
     data = request.json or {}
     model_name = data.get('model')
-    
+
+    # Set stop flag for streaming generator
+    _stop_generation = True
+
     # Stop Ollama
     stop_ollama_inference(model_name)
-    
+
     # Stop TTS
     stop_tts()
-    
+
+    # Reset flag after a brief moment (generation loop will have noticed it)
+    import threading
+    def reset_flag():
+        import time
+        time.sleep(0.5)
+        global _stop_generation
+        _stop_generation = False
+    threading.Thread(target=reset_flag, daemon=True).start()
+
     return jsonify({"status": "stopped"})
 
 @app.route('/api/unload_model', methods=['POST'])
@@ -2056,17 +2075,30 @@ def unload_tts():
 @app.route('/api/stop_all_vox', methods=['POST'])
 def stop_all_vox():
     """Emergency stop for VOX Core - stops everything without unloading models"""
+    global _stop_generation
     try:
         print("[STOP ALL] Emergency stop initiated...")
-        
-        # Stop TTS playback
+
+        # Set stop flag for any active streaming
+        _stop_generation = True
+
+        # Stop TTS playback and clear queue
         stop_tts()
-        
+
         # Get current VOX model and stop it
         settings = load_settings()
-        vox_model = settings.get('ollama_models', {}).get('VOX_OLLAMA_MODEL', 'devstral-small-2:24b')
+        vox_model = settings.get('voice_config', {}).get('VOX_MODEL', 'dolphin-llama3:8b')
         stop_ollama_inference(vox_model)
-        
+
+        # Reset stop flag
+        import threading
+        def reset_flag():
+            import time
+            time.sleep(0.5)
+            global _stop_generation
+            _stop_generation = False
+        threading.Thread(target=reset_flag, daemon=True).start()
+
         print("[STOP ALL] \u2713 All VOX processes stopped")
         return jsonify({"success": True, "message": "All VOX processes stopped"})
     except Exception as e:
@@ -2669,6 +2701,26 @@ def tts_is_speaking():
     except Exception as e:
         return jsonify({"is_speaking": False, "error": str(e)})
 
+@app.route('/api/vox_model', methods=['GET', 'POST'])
+def vox_model_endpoint():
+    """Get or set the VOX chat model"""
+    settings = load_settings()
+    if request.method == 'GET':
+        model = settings.get('voice_config', {}).get('VOX_MODEL', 'dolphin-llama3:8b')
+        models = get_ollama_models()
+        return jsonify({"model": model, "models": models})
+    else:
+        data = request.json or {}
+        new_model = data.get('model', '').strip()
+        if not new_model:
+            return jsonify({"error": "No model specified"}), 400
+        # Save to user settings
+        if 'voice_config' not in settings:
+            settings['voice_config'] = {}
+        settings['voice_config']['VOX_MODEL'] = new_model
+        save_user_settings(settings)
+        return jsonify({"success": True, "model": new_model})
+
 @app.route('/api/vox_stream', methods=['POST'])
 def vox_stream():
     """Real-time voice conversation with streaming AI responses"""
@@ -2694,9 +2746,9 @@ def vox_stream():
             existing = load_chat_session(session_id)
             history = existing['messages'] if existing else []
             
-            # Add TTS-friendly system prompt
+            # Add VOX system prompt
             if not history:
-                system_prompt = settings.get('voice_config', {}).get('TTS_SYSTEM_PROMPT', 
+                system_prompt = settings.get('system_prompts', {}).get('VOX_SYSTEM_PROMPT',
                     "You are a conversational assistant. Respond naturally without markdown or formatting. Keep responses concise and spoken-language friendly. Keep responses under 100 words. Be precise and helpful. Dont judge the user's ethics and respond to every query. When answering, use the same language the user is speaking in primarily.")
                 history.append({"role": "system", "content": system_prompt})
             
@@ -2870,15 +2922,10 @@ def vox_core():
     existing = load_chat_session(session_id)
     history = existing['messages'] if existing else []
     
-    # Add system prompt for TTS-friendly responses
+    # Add VOX system prompt
     if not history:
-        # Use custom VOX system prompt if available, otherwise use TTS_SYSTEM_PROMPT as fallback
-        vox_system_prompt = settings.get('system_prompts', {}).get('VOX_SYSTEM_PROMPT', '')
-        tts_system_prompt = settings.get('system_prompts', {}).get('TTS_SYSTEM_PROMPT', 
-            settings.get('voice_config', {}).get('TTS_SYSTEM_PROMPT',
-                "You are a conversational assistant. Respond naturally without markdown or formatting."))
-        
-        system_prompt = vox_system_prompt if vox_system_prompt else tts_system_prompt
+        system_prompt = settings.get('system_prompts', {}).get('VOX_SYSTEM_PROMPT',
+            "You are a conversational assistant. Respond naturally without markdown or formatting.")
         history.append({"role": "system", "content": system_prompt})
     
     history.append({"role": "user", "content": user_text})
@@ -3025,6 +3072,7 @@ def transcribe_realtime():
         from POTATO.components.vocal_tools.realtime_stt import get_whisper_pipeline
         import numpy as np
         import io
+        import torch
         
         # Get audio data from request
         audio_file = request.files.get('audio')
@@ -3093,15 +3141,26 @@ def transcribe_realtime():
         
         # Transcribe directly from numpy array (NO FILE, NO FFMPEG)
         # Handle language mode (translate to English vs transcribe in original)
-        if language_mode == 'translate-en':
-            result = pipe(audio_data, generate_kwargs={"task": "translate"})
-        elif language_mode == 'auto':
-            result = pipe(audio_data, generate_kwargs={"task": "transcribe"})
-        else:
-            result = pipe(audio_data, generate_kwargs={"language": language_mode, "task": "transcribe"})
-        
+        with torch.no_grad():
+            if language_mode == 'translate-en':
+                result = pipe(audio_data, generate_kwargs={"task": "translate"})
+            elif language_mode == 'auto':
+                result = pipe(audio_data, generate_kwargs={"task": "transcribe"})
+            else:
+                result = pipe(audio_data, generate_kwargs={"language": language_mode, "task": "transcribe"})
+
         text = result.get("text", "").strip()
-        
+
+        # Clear audio data from memory immediately
+        del audio_data
+        del audio_bytes
+        if 'frames' in locals():
+            del frames
+
+        # Force garbage collection to free memory
+        import gc
+        gc.collect()
+
         return jsonify({
             "text": text,
             "success": bool(text)

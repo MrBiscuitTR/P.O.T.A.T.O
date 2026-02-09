@@ -23,9 +23,16 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ.pop("HF_TOKEN", None)
 
-# Force CUDA GPU (not iGPU)
+# Force CUDA GPU (not iGPU) and maximize performance
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"  # Async CUDA for speed
 torch.cuda.set_device(0)
+
+# Set to high performance mode (no power saving)
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True  # Auto-tune for best performance
+    torch.backends.cuda.matmul.allow_tf32 = True  # Faster matmul on Ampere+
+    torch.backends.cudnn.allow_tf32 = True
 
 try:
     from chatterbox.tts_turbo import ChatterboxTurboTTS
@@ -70,9 +77,43 @@ def _get_model():
     if _model is None:
         with _model_lock:
             if _model is None:  # Double-check locking
-                print("Loading Chatterbox Turbo model...")
-                _model = ChatterboxTurboTTS.from_local(ckpt_dir=str(ckpt_path), device=device)
-                print("Chatterbox Turbo model loaded.")
+                print(f"Loading Chatterbox Turbo model to {device}...")
+
+                # Load model (temporarily uses CPU RAM before moving to CUDA)
+                _model = ChatterboxTurboTTS.from_local(
+                    ckpt_dir=str(ckpt_path),
+                    device=device
+                )
+
+                # NOTE: Chatterbox Turbo model structure (confirmed via introspection):
+                # - Does NOT have: sampler, scheduler, noise_scheduler attributes
+                # - Does NOT support: num_steps, cfg_weight, exaggeration parameters
+                # - Components: s3gen (S3Token2Wav), t3 (T3), ve (VoiceEncoder)
+                # - s3gen only has 'resamplers' attribute, no step counters
+                # - Progress bar x/1000 is internal to model.generate() - cannot be configured
+                # - Model is NOT a PyTorch nn.Module, so no .parameters() or .eval() methods
+
+                print(f"[TTS] Chatterbox Turbo model loaded to {device}")
+
+                # NOTE: Chatterbox Turbo is NOT a standard PyTorch nn.Module
+                # - No .parameters() method (not trainable via standard PyTorch)
+                # - No .eval() method (doesn't have train/eval modes)
+                # - Cannot use torch.compile() on it
+                # - Model handles its own CUDA device placement
+
+                if device == "cuda":
+                    # Free CPU RAM after model moved to CUDA
+                    import gc
+                    gc.collect()
+
+                    try:
+                        vram_used = torch.cuda.memory_allocated(0) / 1e9
+                        print(f"[TTS] Using {vram_used:.2f}GB VRAM")
+                    except:
+                        pass
+
+                print("[TTS] Ready for inference (Turbo mode: fast 1-step generation)")
+
     return _model
 
 # Abbreviation-safe sentence splitter
@@ -137,6 +178,9 @@ current_stream = None
 # Global flag to track if TTS is currently speaking (for VOX interrupt detection)
 _is_speaking = False
 
+# Cache audio prompt path string to avoid repeated conversions
+_audio_prompt_str = str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None
+
 def generate_worker(text_groups, audio_q):
     """Generate TTS audio chunks and put them in queue"""
     try:
@@ -148,13 +192,13 @@ def generate_worker(text_groups, audio_q):
                 break
 
             try:
+                # NOTE: Only text and audio_prompt_path are supported
+                # No num_steps, cfg_weight, exaggeration, etc.
                 ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device=="cuda" else torch.no_grad()
                 with ctx:
                     wav = model.generate(
                         text=sentence,
-                        audio_prompt_path=str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None,
-                        exaggeration=0.8, 
-                        cfg_weight=0.5
+                        audio_prompt_path=_audio_prompt_str
                     )
 
                 wav = wav.squeeze()
@@ -187,14 +231,19 @@ def playback_worker(audio_q, sample_rate):
     """Continuously play audio chunks from queue without gaps"""
     global current_stream
     try:
-        while not shutdown_event.is_set():
+        while True:
+            # Check shutdown first - exit immediately if set
+            if shutdown_event.is_set():
+                print("[TTS] Playback worker shutting down...")
+                break
+
             if stop_event.is_set():
                 # Stop current audio
                 try:
                     sd.stop()
                 except:
                     pass
-                
+
                 # Clear queue completely
                 cleared_count = 0
                 while not audio_q.empty():
@@ -203,44 +252,46 @@ def playback_worker(audio_q, sample_rate):
                         cleared_count += 1
                     except queue.Empty:
                         break
-                
+
                 if cleared_count > 0:
                     print(f"[TTS] Cleared {cleared_count} queued chunks")
-                
+
                 # DON'T clear stop_event here - let stop_current_tts() handle it
                 # Wait a moment before checking again
                 time.sleep(0.1)
                 continue
-            
-            # Get next audio with timeout to allow checking stop_event
+
+            # Get next audio with shorter timeout to respond faster to shutdown
             try:
-                item = audio_q.get(timeout=0.5)
+                item = audio_q.get(timeout=0.1)
             except queue.Empty:
                 # No audio available, check flags and continue
                 continue
-            
+
             # None signals end of generation
             if item is None:
+                print("[TTS] Received end signal (None)")
                 break
-            
+
             # Check stop again before playing
             if stop_event.is_set():
                 continue
-            
+
             sentence, wav_np = item
             print(f"→ {sentence}")
-            
+
             try:
                 # Play audio and wait for completion
                 sd.play(wav_np, samplerate=sample_rate, blocking=True)
             except Exception as e:
                 print(f"[TTS] Playback error: {e}")
                 # Continue to next chunk instead of crashing
-            
+
     except Exception as e:
-        print(f"Playback error: {e}")
+        print(f"[TTS] Playback error: {e}")
     finally:
         current_stream = None
+        print("[TTS] Playback worker exited")
 
 def speak_sentences_grouped(text: str):
     """Stream TTS in chunks with seamless playback queue. Safe for very long text."""
@@ -294,7 +345,7 @@ def speak_sentences_grouped(text: str):
         _is_speaking = False
 
 def generate_tts_wav(text: str) -> bytes:
-    """Generate TTS audio and return as WAV bytes (for browser playback)."""
+    """Generate TTS audio and return as WAV bytes (for browser playback). Respects stop flags."""
     import io
     import numpy as np
     from scipy.io import wavfile
@@ -303,34 +354,71 @@ def generate_tts_wav(text: str) -> bytes:
     sample_rate = int(model.sr)
     groups = split_sentences(text)
 
+    # NOTE: Progress bar showing x/1000 during generation is internal to the model
+    # The x value can vary (e.g., 50/1000, 659/1000) based on text length
+    # This is normal behavior and doesn't indicate progressive slowdown
+
+    # Clear CUDA cache before generation
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
     chunks = []
-    for sentence in groups:
-        if not sentence.strip():
-            continue
-        try:
-            ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else torch.no_grad()
-            with ctx:
-                wav = model.generate(
-                    text=sentence,
-                    audio_prompt_path=str(AUDIO_PROMPT_PATH) if AUDIO_PROMPT_PATH else None,
-                    exaggeration=0.8,
-                    cfg_weight=0.5
-                )
-            wav = wav.squeeze()
-            if wav.abs().max() > 1:
-                wav = wav / wav.abs().max()
-            chunks.append(wav.cpu().float().numpy())
-        except Exception as e:
-            print(f"[TTS] Error generating sentence: {e}")
-            continue
+    with torch.inference_mode():  # More efficient than autocast for inference
+        for sentence in groups:
+            # Check stop flags before each sentence
+            if stop_event.is_set() or shutdown_event.is_set():
+                print("[TTS] Generation cancelled by stop flag")
+                break
+
+            if not sentence.strip():
+                continue
+
+            try:
+                # NOTE: Chatterbox Turbo only supports these parameters:
+                # - text (required): The text to synthesize
+                # - audio_prompt_path (optional): Voice reference for cloning
+                # Does NOT support: num_steps, cfg_weight, exaggeration, min_p, etc.
+
+                if device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        wav = model.generate(
+                            text=sentence,
+                            audio_prompt_path=_audio_prompt_str
+                        )
+                else:
+                    wav = model.generate(
+                        text=sentence,
+                        audio_prompt_path=_audio_prompt_str
+                    )
+
+                wav = wav.squeeze()
+                if wav.abs().max() > 1:
+                    wav = wav / wav.abs().max()
+
+                # Single CPU transfer at the end (much faster than per-sentence)
+                chunks.append(wav)
+
+            except Exception as e:
+                print(f"[TTS] Error generating sentence: {e}")
+                continue
 
     if not chunks:
         return b""
 
-    audio = np.concatenate(chunks)
+    # Concatenate on GPU first, then single transfer to CPU (MUCH faster)
+    audio_gpu = torch.cat(chunks, dim=0)
+    audio = audio_gpu.cpu().float().numpy()
+
     audio_int16 = (audio * 32767).astype(np.int16)
     buf = io.BytesIO()
     wavfile.write(buf, sample_rate, audio_int16)
+
+    # NOTE: s3gen (S3Token2Wav) component doesn't have resettable state
+    # The model handles its own internal state management
+    # Clear CUDA cache after generation to free up temp memory
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
     return buf.getvalue()
 
 # =========================
@@ -388,46 +476,66 @@ def is_speaking():
 def shutdown_tts():
     """Stop everything and unload the model to free VRAM. Safe, won't crash app."""
     global _model, producer_thread, playback_thread
-    
+
+    print("[TTS] Starting shutdown sequence...")
+
     # Signal stop
     stop_event.set()
     shutdown_event.set()
-    sd.stop()
-    
+
+    # Stop audio immediately
+    try:
+        sd.stop()
+    except:
+        pass
+
     # Clear queues
+    cleared = 0
     while not audio_q.empty():
         try:
             audio_q.get_nowait()
+            cleared += 1
         except:
             break
-    
+    if cleared > 0:
+        print(f"[TTS] Cleared {cleared} items from queue")
+
     # Put None to signal threads to exit
     try:
         audio_q.put(None, timeout=0.1)
     except:
         pass
-    
-    # Wait for threads
+
+    # Wait for threads with logging
     if producer_thread is not None and producer_thread.is_alive():
-        producer_thread.join(timeout=1.0)
+        print("[TTS] Waiting for producer thread...")
+        producer_thread.join(timeout=0.5)
+        if producer_thread.is_alive():
+            print("[TTS] Producer thread still alive (daemon will exit with app)")
+
     if playback_thread is not None and playback_thread.is_alive():
-        playback_thread.join(timeout=1.0)
-    
+        print("[TTS] Waiting for playback thread...")
+        playback_thread.join(timeout=0.5)
+        if playback_thread.is_alive():
+            print("[TTS] Playback thread still alive (daemon will exit with app)")
+
     # Unload model
     with _model_lock:
         if _model is not None:
+            print("[TTS] Unloading model from VRAM...")
             del _model
             _model = None
             torch.cuda.empty_cache()
-    
+            print("[TTS] Model unloaded, VRAM freed")
+
     # Reset events
     stop_event.clear()
     shutdown_event.clear()
-    
+
     producer_thread = None
     playback_thread = None
-    
-    print("→ TTS shutdown complete, model unloaded, VRAM freed.")
+
+    print("→ TTS shutdown complete.")
 
 def unload_model():
     """Unload the model from memory"""
