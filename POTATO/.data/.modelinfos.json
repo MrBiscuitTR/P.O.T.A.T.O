@@ -22,7 +22,15 @@
     "detection_date": "2026-02-04T20:54:10.441236"
   },
   "qwen2.5:14b-instruct-q4_K_M": {
-    "vision": false
+    "vision": false,
+    "thinking_tags": {
+      "open": "",
+      "close": ""
+    },
+    "has_inline_thinking": false,
+    "supports_streaming_thinking": false,
+    "detection_notes": "Using safe defaults (no tags)",
+    "detection_date": "2026-02-10T00:51:50.167742"
   },
   "llava:7b": {
     "vision": true
