@@ -1,4 +1,6 @@
 import csv
+import matplotlib
+matplotlib.use('Agg')  # Thread-safe backend
 import matplotlib.pyplot as plt
 import os
 import numpy as np
@@ -168,6 +170,70 @@ def draw_any_graph_type(
     os.makedirs(output_dir, exist_ok=True)
     plt.savefig(os.path.join(output_dir, output_name), bbox_inches='tight')
     plt.close()
+
+def generate_graph_for_chat(
+    data: List[Dict],
+    graph_type: str,
+    title: str = "Graph",
+    x_key: str = None,
+    y_key: str = None,
+    x_label: str = "X-axis",
+    y_label: str = "Y-axis",
+    output_dir: str = None,
+    output_name: str = None
+) -> Dict:
+    """Generate a graph and save it to the specified output directory.
+
+    Args:
+        data: List of dicts with consistent keys.
+        graph_type: One of the available_graph_types.
+        title: Graph title.
+        x_key: Key for X-axis data. Auto-detected if None.
+        y_key: Key for Y-axis data. Auto-detected if None.
+        x_label: X-axis label.
+        y_label: Y-axis label.
+        output_dir: REQUIRED - directory to save the graph.
+        output_name: Filename for the output. Auto-generated if None.
+
+    Returns:
+        dict with 'success', 'filename', and 'error' keys.
+    """
+    if not output_dir:
+        return {"success": False, "error": "output_dir is required"}
+
+    if not data or not isinstance(data, list):
+        return {"success": False, "error": "data must be a non-empty list of dicts"}
+
+    if graph_type not in available_graph_types:
+        return {"success": False, "error": f"Unsupported graph type: {graph_type}. Available: {available_graph_types}"}
+
+    # Auto-detect keys if not provided
+    keys = list(data[0].keys())
+    if not x_key:
+        x_key = keys[0] if keys else "x"
+    if not y_key:
+        y_key = keys[1] if len(keys) > 1 else keys[0]
+
+    if not output_name:
+        safe_title = title[:30].replace(" ", "_").replace("/", "_").replace("\\", "_")
+        output_name = f"{safe_title}_{graph_type}.png"
+
+    try:
+        draw_any_graph_type(
+            data=data,
+            x_key=x_key,
+            y_key=y_key,
+            graph_type=graph_type,
+            title=title,
+            x_label=x_label,
+            y_label=y_label,
+            output_dir=output_dir,
+            output_name=output_name
+        )
+        return {"success": True, "filename": output_name}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 
 if __name__ == "__main__":
     os.makedirs("graphs_output", exist_ok=True)

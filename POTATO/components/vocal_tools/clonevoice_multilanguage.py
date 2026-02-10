@@ -126,6 +126,9 @@ def _get_english_model():
             if _english_model is None:
                 print("Loading Chatterbox English model...")
                 _english_model = ChatterboxTTS.from_pretrained(device=device)
+                if device == "cuda":
+                    import gc
+                    gc.collect()
                 print("English model loaded.")
     return _english_model
 
@@ -137,6 +140,9 @@ def _get_multilingual_model():
             if _multilingual_model is None:
                 print("Loading Chatterbox Multilingual model...")
                 _multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+                if device == "cuda":
+                    import gc
+                    gc.collect()
                 print("Multilingual model loaded.")
     return _multilingual_model
 
@@ -308,11 +314,16 @@ def _get_stop_event():
         return None
 
 
-def generate_tts_wav_streamed_multilingual(text: str, language: str = "en"):
+def generate_tts_wav_streamed_multilingual(text: str, language: str = "en", audio_prompt_path: str = None):
     """Yield individual WAV-chunk bytes for each sentence group (multilingual).
 
     Mirrors the streaming interface of clonevoice_turbo.generate_tts_wav_streamed()
     so the SSE endpoint can treat both identically.
+
+    Args:
+        text: The text to synthesize.
+        language: Language code (e.g. 'en', 'tr', 'fr').
+        audio_prompt_path: Optional voice reference file path. Uses default if None.
 
     Yields:
         tuple(int, int, bytes):  (chunk_index, total_chunks, wav_bytes)
@@ -375,10 +386,12 @@ def generate_tts_wav_streamed_multilingual(text: str, language: str = "en"):
         try:
             with torch.no_grad(), \
                  torch.autocast(device_type="cuda", dtype=torch.bfloat16) if device == "cuda" else torch.no_grad():
+                # Use provided voice path or fall back to default REFERENCE_PATH
+                effective_prompt = audio_prompt_path if audio_prompt_path else (str(REFERENCE_PATH) if REFERENCE_PATH else None)
                 wav = model.generate(
                     text=sentence,
                     language_id=lang_id,
-                    audio_prompt_path=str(REFERENCE_PATH) if REFERENCE_PATH else None,
+                    audio_prompt_path=effective_prompt,
                     temperature=TEMPERATURE,
                     exaggeration=EXAGGERATION,
                 )

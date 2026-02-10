@@ -33,7 +33,6 @@ def _get_whisper_pipeline():
     """
     from POTATO.components.vocal_tools.realtime_stt import get_whisper_pipeline
     return get_whisper_pipeline()
-    return _whisper_pipeline
 
 
 def unload_whisper():
@@ -127,48 +126,56 @@ def detect_language(audio_input: Union[str, Path, np.ndarray]) -> str:
         return "en"
 
 
-# Import TTS functions from existing modules
-try:
-    from POTATO.components.vocal_tools.clonevoice_turbo import speak_sentences_grouped, stop_current_tts, shutdown_tts
-    TTS_AVAILABLE = True
-except ImportError:
-    print("Warning: TTS modules not available")
-    TTS_AVAILABLE = False
-    
-    def speak_sentences_grouped(text, **kwargs):
-        print(f"[TTS FALLBACK] Would speak: {text}")
-    
-    def stop_current_tts():
-        print("[TTS FALLBACK] Would stop TTS")
-    
-    def shutdown_tts():
-        print("[TTS FALLBACK] Would shutdown TTS")
+# TTS functions are imported lazily to avoid loading heavy dependencies at import time.
+# clonevoice_turbo imports torch, torchaudio, chatterbox, etc. which use significant RAM.
+
+def _get_tts_functions():
+    """Lazy-load TTS functions from clonevoice_turbo."""
+    try:
+        from POTATO.components.vocal_tools.clonevoice_turbo import speak_sentences_grouped, stop_current_tts, shutdown_tts
+        return speak_sentences_grouped, stop_current_tts, shutdown_tts
+    except ImportError:
+        print("Warning: TTS modules not available")
+        return None, None, None
 
 
 def speak(text: str, language: str = "en"):
     """
     Text-to-speech wrapper.
     Uses English TTS by default, multilingual if language is not English.
-    
+
     Args:
         text: Text to speak
         language: Language code (default: "en")
     """
-    if not TTS_AVAILABLE:
-        print(f"[TTS - Chatterbox] {text}")
+    speak_fn, _, _ = _get_tts_functions()
+    if speak_fn is None:
+        print(f"[TTS - Chatterbox] TTS not available: {text}")
         return
-    
+
     if language == "en":
-        # Use clonevoice_turbo for English
-        speak_sentences_grouped(text)
+        speak_fn(text)
     else:
-        # Use multilingual TTS
         try:
-            from POTATO.components.vocal_tools.clonevoice_multilanguage import speak_multilingual
+            from POTATO.components.vocal_tools.clonevoice_multilanguage import speak as speak_multilingual
             speak_multilingual(text, language=language)
         except ImportError:
             print(f"[TTS - Chatterbox] Multilingual TTS not available, using English TTS")
-            speak_sentences_grouped(text)
+            speak_fn(text)
+
+
+def stop_current_tts():
+    """Stop current TTS playback."""
+    _, stop_fn, _ = _get_tts_functions()
+    if stop_fn:
+        stop_fn()
+
+
+def shutdown_tts():
+    """Shutdown TTS and free resources."""
+    _, _, shutdown_fn = _get_tts_functions()
+    if shutdown_fn:
+        shutdown_fn()
 
 
 if __name__ == "__main__":

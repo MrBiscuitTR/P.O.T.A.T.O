@@ -96,6 +96,7 @@ CHATS_DIR = os.path.join(DATA_DIR, 'chats')
 UPLOADS_DIR = os.path.join(DATA_DIR, 'uploads')
 TEMP_DIR = os.path.join(BASE_DIR, '.temp', 'uploads')  # For RAG temp files
 MODEL_INFO_PATH = os.path.join(DATA_DIR, '.modelinfos.json')
+VOICE_SAMPLES_DIR = os.path.join(BASE_DIR, 'components', 'vocal_tools', 'samples')
 
 os.makedirs(CHATS_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
@@ -228,11 +229,14 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False, act
                     break
 
             # Only generate AI title if:
-            # 1. This is a NEW chat (doesn't exist yet)
+            # 1. This is a NEW chat OR existing title is a placeholder (ends with "...")
             # 2. We have BOTH user message AND assistant response
             # 3. We don't already have a permanent title
-            should_generate_title = (is_new_chat and user_msg and ai_response and
-                                    (not existing_title or existing_title.endswith('...')))
+            has_placeholder_title = existing_title and existing_title.endswith('...')
+            should_generate_title = ((is_new_chat or has_placeholder_title) and user_msg and ai_response and
+                                    (not existing_title or has_placeholder_title))
+
+            print(f"[CHAT TITLE] is_new={is_new_chat}, placeholder={has_placeholder_title}, has_user={bool(user_msg)}, has_ai={bool(ai_response)}, existing='{existing_title}', should_gen={should_generate_title}, active_model={active_model}")
 
             if should_generate_title:
                 try:
@@ -254,6 +258,10 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False, act
                         context = f"User: {user_msg[:200]}"
                         context += f"\nAssistant: {ai_response[:200]}"
 
+                        # If using same model as chat, keep it loaded for follow-up prompts
+                        # Otherwise unload the naming model immediately
+                        keep_alive_value = 600 if naming_model == active_model else 0
+
                         response = ollama.chat(
                             model=naming_model,
                             messages=[{
@@ -263,17 +271,10 @@ def save_chat_session(session_id, messages, title=None, is_voice_chat=False, act
                                 'role': 'user',
                                 'content': context
                             }],
-                            options={'num_predict': 30},  # Limit response length
-                            keep_alive=0  # Unload immediately after generating title
+                            # options={'num_predict': 30},  # Limit response length
+                            keep_alive=keep_alive_value  # Keep loaded if same as chat model, unload if different
                         )
-                        title = response['message']['content'].strip().strip('"\'')
-
-                        # Truncate if too long
-                        words = title.split()
-                        if len(words) > 7:
-                            title = ' '.join(words[:7])
-
-                        print(f"[CHAT] Generated title: {title}")
+                        title = response['message']['content'].strip().strip('\"\'')
                     else:
                         # No model configured - use fallback title
                         if existing_title:
@@ -2538,8 +2539,9 @@ def chat_stream():
     # IMMEDIATELY save session with placeholder title so it appears in chat list
     # This will be updated with AI-generated title at end of stream
     if not existing:
-        # New chat - save immediately with first message preview as placeholder
-        placeholder_title = user_input[:27] + "..." if len(user_input) > 27 else user_input
+        # New chat - save immediately with placeholder title (always ends with "..."
+        # so save_chat_session knows to regenerate it later with AI)
+        placeholder_title = user_input[:27] + "..."
         save_chat_session(session_id, history, title=placeholder_title)
         print(f"[CHAT] New session created immediately: {session_id}")
 
@@ -2561,12 +2563,13 @@ def chat_stream():
             # simple_stream_test yields {'content': ..., 'tool': ...} dicts
             # Pass base64 images for VL models - Ollama expects base64, NOT file paths!
             stream = simple_stream_test(
-                history, 
-                model=model, 
+                history,
+                model=model,
                 enable_search=web_search_enabled,
                 stealth_mode=stealth_mode,
                 custom_system_prompt=custom_system_prompt,
-                images=image_base64_list if image_base64_list else None
+                images=image_base64_list if image_base64_list else None,
+                session_id=session_id
             )
             
             accumulated_content = ""
@@ -2719,13 +2722,9 @@ def chat_stream():
                     assistant_msg["_thinking"] = accumulated_thinking
                 
                 history.append(assistant_msg)
-                
-                # Save with AI-generated title if this was a new chat
-                # (The title generation logic in save_chat_session will create a proper title)
-                if not existing:
-                    save_chat_session(session_id, history)  # Will generate AI title
-                else:
-                    save_chat_session(session_id, history)  # Will preserve existing title
+
+                # Save final chat - generate AI title only for new chats with placeholder titles
+                save_chat_session(session_id, history, active_model=model)
             
             # End stream
             yield f"data: {json.dumps({'session_id': session_id, 'done': True})}\n\n"
@@ -2833,7 +2832,7 @@ def vox_stream():
             
             # Stream AI response (keep_alive=180 for VOX - 3 minutes)
             accumulated_response = ""
-            for chunk in simple_stream_test(history, model=vox_model, enable_search=False, stealth_mode=False, keep_alive=180):
+            for chunk in simple_stream_test(history, model=vox_model, enable_search=False, stealth_mode=False, keep_alive=180, session_id=session_id):
                 if 'content' in chunk:
                     accumulated_response += chunk['content']
                     yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
@@ -2845,13 +2844,15 @@ def vox_stream():
                     yield f"data: {json.dumps({'error': chunk['error']})}\n\n"
             
             # Save conversation with voice chat flag
+            chat_title = None
             if accumulated_response:
                 history.append({"role": "assistant", "content": accumulated_response, "model": vox_model})
                 saved_data = save_chat_session(session_id, history, is_voice_chat=True, active_model=vox_model)
                 session_id = saved_data['id']  # Update session_id with vox_ prefix if added
-            
-            # Signal completion with TTS trigger
-            yield f"data: {json.dumps({'done': True, 'response': accumulated_response, 'speak': True, 'language': language, 'session_id': session_id})}\n\n"
+                chat_title = saved_data.get('title', '')
+
+            # Signal completion with TTS trigger and title for frontend chat list update
+            yield f"data: {json.dumps({'done': True, 'response': accumulated_response, 'speak': True, 'language': language, 'session_id': session_id, 'title': chat_title})}\n\n"
             
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
@@ -2908,6 +2909,131 @@ def vox_speak_wav():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/voices', methods=['GET'])
+def list_voices():
+    """List available voice samples (default + per-chat uploads)."""
+    session_id = request.args.get('session_id', '')
+    voices = []
+
+    # Default voices from samples/ directory
+    if os.path.isdir(VOICE_SAMPLES_DIR):
+        for fname in sorted(os.listdir(VOICE_SAMPLES_DIR)):
+            if fname.lower().endswith(('.wav', '.mp3')):
+                voices.append({
+                    'name': os.path.splitext(fname)[0],
+                    'filename': fname,
+                    'path': os.path.join(VOICE_SAMPLES_DIR, fname),
+                    'is_default': True,
+                    'is_custom': False
+                })
+
+    # Per-chat uploaded voices
+    if session_id:
+        chat_voices_dir = os.path.join(UPLOADS_DIR, session_id, 'voices')
+        if os.path.isdir(chat_voices_dir):
+            for fname in sorted(os.listdir(chat_voices_dir)):
+                if fname.lower().endswith(('.wav', '.mp3')):
+                    voices.append({
+                        'name': os.path.splitext(fname)[0],
+                        'filename': fname,
+                        'path': os.path.join(chat_voices_dir, fname),
+                        'is_default': False,
+                        'is_custom': True
+                    })
+
+    return jsonify(voices)
+
+
+@app.route('/api/voices/upload', methods=['POST'])
+def upload_voice():
+    """Upload a custom voice file for a chat session."""
+    session_id = request.form.get('session_id', '')
+    if not session_id:
+        return jsonify({"error": "session_id is required"}), 400
+
+    # Validate session_id to prevent path traversal
+    if '..' in session_id or '/' in session_id or '\\' in session_id:
+        return jsonify({"error": "Invalid session_id"}), 400
+
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({"error": "No file selected"}), 400
+
+    # Validate file extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in ('.wav', '.mp3'):
+        return jsonify({"error": "Only .wav and .mp3 files are allowed"}), 400
+
+    # Validate file size (2.5 MB max)
+    file.seek(0, 2)
+    file_size = file.tell()
+    file.seek(0)
+    if file_size > 2.5 * 1024 * 1024:
+        return jsonify({"error": "File too large (max 2.5 MB)"}), 400
+
+    # Save to chat's voices directory
+    chat_voices_dir = os.path.join(UPLOADS_DIR, session_id, 'voices')
+    os.makedirs(chat_voices_dir, exist_ok=True)
+
+    # Sanitize filename
+    from werkzeug.utils import secure_filename
+    safe_name = secure_filename(file.filename)
+    if not safe_name:
+        safe_name = f"voice{ext}"
+
+    save_path = os.path.join(chat_voices_dir, safe_name)
+    file.save(save_path)
+
+    print(f"[VOICE] Uploaded voice file: {safe_name} for session {session_id}")
+
+    return jsonify({
+        'name': os.path.splitext(safe_name)[0],
+        'filename': safe_name,
+        'path': save_path,
+        'is_default': False,
+        'is_custom': True
+    })
+
+
+@app.route('/api/voices/file/<path:filepath>')
+def serve_voice_file(filepath):
+    """Serve a voice file for playback preview. Accepts default or custom paths."""
+    # Check if it's a default sample
+    default_path = os.path.join(VOICE_SAMPLES_DIR, os.path.basename(filepath))
+    if os.path.isfile(default_path):
+        return send_file(default_path, mimetype='audio/wav')
+
+    # Check if it's a custom upload (filepath format: session_id/voices/filename)
+    parts = filepath.replace('\\', '/').split('/')
+    if len(parts) >= 3 and parts[1] == 'voices':
+        session_id = parts[0]
+        filename = parts[2]
+        # Validate no path traversal
+        if '..' not in session_id and '..' not in filename:
+            custom_path = os.path.join(UPLOADS_DIR, session_id, 'voices', filename)
+            if os.path.isfile(custom_path):
+                return send_file(custom_path, mimetype='audio/wav')
+
+    return jsonify({"error": "Voice file not found"}), 404
+
+
+@app.route('/api/chat_images/<session_id>/<filename>')
+def serve_chat_image(session_id, filename):
+    """Serve LLM-generated images from a chat's upload folder."""
+    # Validate to prevent path traversal
+    if '..' in session_id or '..' in filename or '/' in session_id or '\\' in session_id:
+        return jsonify({"error": "Invalid path"}), 400
+
+    image_path = os.path.join(UPLOADS_DIR, session_id, 'llm-generated', filename)
+    if not os.path.isfile(image_path):
+        return jsonify({"error": "Image not found"}), 404
+
+    return send_file(image_path, mimetype='image/png')
+
+
 @app.route('/api/vox_speak_wav_stream', methods=['POST'])
 def vox_speak_wav_stream():
     """Stream TTS audio chunk-by-chunk as Server-Sent Events.
@@ -2916,7 +3042,7 @@ def vox_speak_wav_stream():
     2-3 sentences of the input text.  The browser can start playing chunk 0
     while chunk 1 is still being generated, giving near-instant playback.
 
-    Request JSON:  { "text": "...", "language": "en" }
+    Request JSON:  { "text": "...", "language": "en", "voice_path": "..." (optional) }
 
     SSE events:
       data: {"chunk": <index>, "total": <n>, "audio_b64": "<base64-wav>"}
@@ -2930,6 +3056,15 @@ def vox_speak_wav_stream():
             data = request.json
             text = data.get('text')
             language = data.get('language', 'en')
+            voice_path = data.get('voice_path')
+
+            # Validate voice_path if provided (prevent path traversal)
+            if voice_path:
+                voice_path = os.path.normpath(voice_path)
+                if not os.path.isfile(voice_path):
+                    voice_path = None
+                elif '..' in voice_path:
+                    voice_path = None
 
             if not text:
                 yield f"data: {json.dumps({'error': 'No text provided'})}\n\n"
@@ -2938,13 +3073,13 @@ def vox_speak_wav_stream():
             if language == 'en':
                 # Use the new streaming generator for English (Chatterbox Turbo)
                 from POTATO.components.vocal_tools.clonevoice_turbo import generate_tts_wav_streamed
-                for chunk_idx, total_chunks, wav_bytes in generate_tts_wav_streamed(text):
+                for chunk_idx, total_chunks, wav_bytes in generate_tts_wav_streamed(text, audio_prompt_path=voice_path):
                     audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
                     yield f"data: {json.dumps({'chunk': chunk_idx, 'total': total_chunks, 'audio_b64': audio_b64})}\n\n"
             else:
                 # Multilingual: use streaming generator if available, else fall back to single chunk
                 from POTATO.components.vocal_tools.clonevoice_multilanguage import generate_tts_wav_streamed_multilingual
-                for chunk_idx, total_chunks, wav_bytes in generate_tts_wav_streamed_multilingual(text, language=language):
+                for chunk_idx, total_chunks, wav_bytes in generate_tts_wav_streamed_multilingual(text, language=language, audio_prompt_path=voice_path):
                     audio_b64 = base64.b64encode(wav_bytes).decode('ascii')
                     yield f"data: {json.dumps({'chunk': chunk_idx, 'total': total_chunks, 'audio_b64': audio_b64})}\n\n"
 

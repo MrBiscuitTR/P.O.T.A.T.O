@@ -1661,17 +1661,19 @@ function renderMarkdown(element, text) {
                     const hasLatexEnv = /\\begin\{[a-zA-Z*]+\}/.test(txt) || /\\end\{[a-zA-Z*]+\}/.test(txt);
                     const hasLatexDelim = txt.includes('$$') || txt.includes('\\[') || txt.includes('\\]') ||
                                          txt.includes('\\(') || txt.includes('\\)');
-                    const hasLatexCommands = /\\(?:frac|sqrt|sum|int|prod|lim|infty|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|omega|nabla|partial|cdot|times|div|pm|leq|geq|neq|approx|equiv|sin|cos|tan|log|ln|exp|matrix|begin|end|text|mathbb|mathcal|boldsymbol|vec|hat|bar|tilde|dot|left|right|big|Big|[a-zA-Z]+)\{?/.test(txt);
+                    // Only match specific LaTeX commands - NO catch-all [a-zA-Z]+ which falsely matches \n, \t, etc.
+                    const hasLatexCommands = /\\(?:frac|sqrt|sum|int|prod|lim|infty|alpha|beta|gamma|delta|epsilon|theta|lambda|mu|sigma|omega|nabla|partial|cdot|cdotp|times|div|pm|leq|geq|neq|approx|equiv|sin|cos|tan|log|ln|exp|matrix|mathbb|mathcal|boldsymbol|vec|hat|slashed|tilde|operatorname|displaystyle|textstyle|overline|underline|overbrace|underbrace)\b/.test(txt);
                     const wrappedInMathDelim = /^\$\$[\s\S]+\$\$$/.test(txt) || /^\\\[[\s\S]+\\\]$/.test(txt) ||
                                                /^\$[^\$]+\$$/.test(txt) || /^\\\([\s\S]+\\\)$/.test(txt);
 
                     const looksLikeMath = hasLatexEnv || hasLatexDelim || hasLatexCommands || wrappedInMathDelim;
 
                     // Additional check: if it contains typical code patterns, don't unwrap
-                    const looksLikeCode = /^(function|class|const|let|var|def|import|export|return|if|else|for|while)\s/.test(txt) ||
+                    const looksLikeCode = /^(function|class|html|const|let|var|def|import|export|return|if|else|for|while|#!?\s*\/|#\s*\w)/.test(txt) ||
                                          /[;{}()]\s*$/.test(txt) ||
-                                         txt.split('\n').length > 3 && /^[\s]+(function|const|let|var|if|for|while|def|class)/.test(txt);
-
+                                         /\b(echo|printf|awk|sed|grep|curl|wget|apt|pip|npm|docker|git|sudo|chmod|chown|mkdir|rm|cp|mv|cat|ls)\b/.test(txt) ||
+                                         /\$\w+|\$\{/.test(txt) ||
+                                         txt.split('\n').length > 3;
                     if (looksLikeMath && !looksLikeCode) {
                         // Replace the <pre> with a div that contains the raw math text so KaTeX can find it
                         const container = document.createElement('div');
@@ -1720,6 +1722,22 @@ function renderMarkdown(element, text) {
             }
         });
         
+        // Post-process images: add error handling and click-to-expand
+        element.querySelectorAll('img').forEach(img => {
+            img.onerror = () => {
+                img.classList.add('img-error');
+                img.alt = img.alt || 'Image failed to load';
+            };
+            img.onclick = (e) => {
+                e.preventDefault();
+                const overlay = document.createElement('div');
+                overlay.className = 'image-fullscreen-overlay';
+                overlay.innerHTML = `<img src="${img.src}" alt="${img.alt || ''}">`;
+                overlay.onclick = () => overlay.remove();
+                document.body.appendChild(overlay);
+            };
+        });
+
         // Render LaTeX math with KaTeX
         renderLatex(element);
     } catch (e) {
@@ -1758,7 +1776,7 @@ function renderLatex(element) {
             trust: true,
             fleqn: false,
             // Don't process inside code blocks (but our unwrapMathCodeBlocks handles math in code)
-            ignoredTags: ['script', 'noscript', 'style', 'textarea'],
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
             ignoredClasses: ['no-latex'],
             // Preprocess to handle edge cases
             preProcess: (text) => {

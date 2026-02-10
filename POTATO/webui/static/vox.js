@@ -157,6 +157,33 @@ async function initVOX() {
         // Load voice chat history (fast)
         await loadVoiceChatList();
 
+        // Restore saved language preferences from server
+        try {
+            const prefsResp = await fetch('/api/preferences');
+            const prefs = await prefsResp.json();
+            if (prefs.vox_transcription_language) {
+                voxTranscriptionLanguage = prefs.vox_transcription_language;
+                const sttSelect = document.getElementById('vox-transcription-language');
+                if (sttSelect) sttSelect.value = prefs.vox_transcription_language;
+                console.log('[VOX] Restored STT language:', prefs.vox_transcription_language);
+            }
+            if (prefs.vox_tts_language) {
+                voxLanguage = prefs.vox_tts_language;
+                const ttsSelect = document.getElementById('vox-tts-language');
+                if (ttsSelect) ttsSelect.value = prefs.vox_tts_language;
+                console.log('[VOX] Restored TTS language:', prefs.vox_tts_language);
+            }
+            if (prefs.vox_selected_voice) {
+                voxSelectedVoicePath = prefs.vox_selected_voice;
+                console.log('[VOX] Restored voice selection:', prefs.vox_selected_voice);
+            }
+        } catch (e) {
+            console.warn('[VOX] Failed to load language preferences:', e);
+        }
+
+        // Load voice list
+        await loadVoiceList();
+
         // Initialize audio context
         voxAudioContext = new (window.AudioContext || window.webkitAudioContext)();
 
@@ -716,11 +743,16 @@ async function transcribeAndRespond(audioBlob) {
                     try {
                         const data = JSON.parse(line.slice(6));
                         
-                        if (data.session_id) {
+                        if (data.session_id && !data.done) {
+                            const wasNewChat = !voxSessionId;
                             voxSessionId = data.session_id;
                             console.log('[VOX] Received session_id:', data.session_id);
+                            // New chat was just created - reload list and auto-select it
+                            if (wasNewChat) {
+                                loadVoiceChatList();
+                            }
                         }
-                        
+
                         if (data.content) {
                             accumulatedResponse += data.content;
                             updateVOXMessage(botMsgId, accumulatedResponse);
@@ -733,7 +765,10 @@ async function transcribeAndRespond(audioBlob) {
                                 voxSessionId = data.session_id;
                                 console.log('[VOX] Final session_id:', voxSessionId);
                             }
-                            
+
+                            // Reload chat list to pick up AI-generated title
+                            loadVoiceChatList();
+
                             // Speak the response
                             updateVOXStatus('Speaking...');
                             console.log('[VOX] Starting TTS...');
@@ -996,10 +1031,14 @@ async function speakText(text, language = 'en') {
         // Create an AbortController so stop buttons can kill the fetch
         voxTtsAbortController = new AbortController();
 
+        const ttsBody = { text, language };
+        if (voxSelectedVoicePath) {
+            ttsBody.voice_path = voxSelectedVoicePath;
+        }
         const response = await fetch('/api/vox_speak_wav_stream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, language }),
+            body: JSON.stringify(ttsBody),
             signal: voxTtsAbortController.signal
         });
 
@@ -1222,12 +1261,12 @@ async function loadVoiceChatList() {
     try {
         const response = await fetch('/api/voice_chats');
         allVoiceChats = await response.json();
-        
+
         const select = document.getElementById('vox-chat-list');
         if (!select) return;
-        
+
         select.innerHTML = '<option value="">New Voice Chat</option>';
-        
+
         allVoiceChats.forEach(chat => {
             const option = document.createElement('option');
             option.value = chat.id;
@@ -1235,9 +1274,111 @@ async function loadVoiceChatList() {
             option.dataset.messages = JSON.stringify(chat.messages || []);
             select.appendChild(option);
         });
+
+        // Auto-select current session if one is active
+        if (voxSessionId) {
+            select.value = voxSessionId;
+        }
     } catch (error) {
         console.error('Error loading voice chat list:', error);
     }
+}
+
+// Voice selector state
+let voxSelectedVoicePath = null;
+
+async function loadVoiceList() {
+    const select = document.getElementById('vox-voice-select');
+    if (!select) return;
+
+    try {
+        const sessionParam = voxSessionId ? `?session_id=${voxSessionId}` : '';
+        const response = await fetch(`/api/voices${sessionParam}`);
+        const voices = await response.json();
+
+        select.innerHTML = '<option value="">Default Voice</option>';
+
+        voices.forEach(voice => {
+            const option = document.createElement('option');
+            option.value = voice.path;
+            const prefix = voice.is_custom ? '📁 ' : '';
+            option.textContent = `${prefix}${voice.name}`;
+            select.appendChild(option);
+        });
+
+        // Restore saved selection
+        if (voxSelectedVoicePath) {
+            select.value = voxSelectedVoicePath;
+            // If the saved path isn't in the list (e.g. chat changed), reset
+            if (!select.value) {
+                voxSelectedVoicePath = null;
+            }
+        }
+    } catch (error) {
+        console.error('[VOX] Error loading voice list:', error);
+    }
+}
+
+function setVoiceSelection(path) {
+    voxSelectedVoicePath = path || null;
+    console.log('[VOX] Voice set to:', path || 'default');
+    // Save preference
+    fetch('/api/preferences', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vox_selected_voice: path || '' })
+    }).catch(e => console.warn('[VOX] Failed to save voice pref:', e));
+}
+
+function uploadVoiceFile() {
+    if (!voxSessionId) {
+        alert('Please start or select a voice chat first before uploading a voice.');
+        return;
+    }
+
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.wav,.mp3';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Client-side size validation (2.5 MB)
+        if (file.size > 2.5 * 1024 * 1024) {
+            alert('File too large. Maximum size is 2.5 MB.');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('session_id', voxSessionId);
+
+        try {
+            const response = await fetch('/api/voices/upload', {
+                method: 'POST',
+                body: formData
+            });
+
+            const result = await response.json();
+            if (!response.ok) {
+                alert(result.error || 'Upload failed');
+                return;
+            }
+
+            console.log('[VOX] Voice uploaded:', result.name);
+            // Reload voice list and auto-select the uploaded voice
+            await loadVoiceList();
+            const select = document.getElementById('vox-voice-select');
+            if (select) {
+                select.value = result.path;
+                setVoiceSelection(result.path);
+            }
+        } catch (error) {
+            console.error('[VOX] Voice upload error:', error);
+            alert('Failed to upload voice file.');
+        }
+    };
+    input.click();
 }
 
 function filterVoiceChats(searchQuery) {
@@ -1304,16 +1445,17 @@ async function loadVoiceChat(chatId) {
         // New chat - clear everything
         voxSessionId = null;
         clearVOXChat();
+        loadVoiceList();  // Reload voices (no custom voices for new chat)
         return;
     }
-    
+
     try {
         const response = await fetch(`/api/chats/${chatId}`);
         const chat = await response.json();
-        
+
         voxSessionId = chatId;
         clearVOXChat();
-        
+
         // Load messages into chat window
         chat.messages.forEach(msg => {
             if (msg.role === 'user') {
@@ -1322,7 +1464,10 @@ async function loadVoiceChat(chatId) {
                 addVOXMessage(msg.content, 'bot');
             }
         });
-        
+
+        // Reload voice list for this chat's custom voices
+        loadVoiceList();
+
         console.log('[VOX] Loaded voice chat:', chat.title);
     } catch (error) {
         console.error('Error loading voice chat:', error);
@@ -1548,10 +1693,24 @@ if (typeof window.VOX === 'undefined') {
         stopSpeaking: stopVOXSpeaking,
         stopAll: stopAllVOX,
         clearChat: clearVOXChat,
-        setLanguage: (lang) => { voxLanguage = lang; },
+        setLanguage: (lang) => {
+            voxLanguage = lang;
+            // Persist TTS language preference
+            fetch('/api/preferences', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vox_tts_language: lang, vox_language: lang })
+            }).catch(e => console.warn('[VOX] Failed to save TTS language pref:', e));
+        },
         setTranscriptionLanguage: (lang) => {
             voxTranscriptionLanguage = lang;
             console.log(`[VOX] Transcription language set to: ${lang}`);
+            // Persist transcription language preference
+            fetch('/api/preferences', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vox_transcription_language: lang })
+            }).catch(e => console.warn('[VOX] Failed to save STT language pref:', e));
         },
         setAudioDevice: setAudioDevice,
         loadTTSModels: loadTTSModels  // Expose for tab switching preload

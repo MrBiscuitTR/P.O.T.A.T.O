@@ -466,7 +466,7 @@ def generate_tts_wav(text: str) -> bytes:
     return buf.getvalue()
 
 
-def generate_tts_wav_streamed(text: str):
+def generate_tts_wav_streamed(text: str, audio_prompt_path: str = None):
     """Yield individual WAV-chunk bytes as each sentence group is generated.
 
     This is the core of the streaming TTS pipeline:
@@ -475,6 +475,10 @@ def generate_tts_wav_streamed(text: str):
     - Yields (chunk_index, total_chunks, wav_bytes) after each group finishes
     - Checks stop_event between every group so the caller can cancel instantly
     - The browser can start playing chunk 0 while chunk 1 is being generated
+
+    Args:
+        text: The text to synthesize.
+        audio_prompt_path: Optional voice reference file path. Uses default if None.
 
     Yields:
         tuple(int, int, bytes):  (chunk_index, total_chunks, wav_bytes_for_this_chunk)
@@ -499,11 +503,8 @@ def generate_tts_wav_streamed(text: str):
         if stop_event.is_set():
             stop_event.clear()
 
-        # Clear CUDA cache before starting a batch of generations
-        # if device == "cuda":
-        #     torch.cuda.empty_cache()
-
-        prompt_path = _get_cached_audio_prompt_path()
+        # Use provided voice path or fall back to default
+        prompt_path = audio_prompt_path if audio_prompt_path else _get_cached_audio_prompt_path()
 
         for idx, sentence in enumerate(groups):
             # --- Check cancellation before generating each chunk ---

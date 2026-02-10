@@ -46,17 +46,17 @@ except Exception as e:
     potatool_extract_content = None
 import glob
 import threading
-import torch
-import scipy.io.wavfile
-import numpy as np
 import ollama
+import uuid
+import re
 from POTATO.components.utilities.get_system_info import json_get_instant_system_info
-from POTATO.components.online_tools.searxng_get_urls import searx_get_urls_topic_page
-from POTATO.components.visual_tools.image_gen import generate_image
-from POTATO.components.utilities.summarize import summarize_content
-from POTATO.components.utilities.combine_context import combine_context
-from POTATO.components.utilities.check_relevance import check_preview_relevance, check_summary_relevance
-from POTATO.components.online_tools.scrape_url_content import scrape_and_clean_url_content
+
+# Heavy imports removed from module level to reduce RAM usage at startup:
+# - torch: imported lazily where needed
+# - scipy.io.wavfile: unused in this module
+# - image_gen.generate_image: unused in this module (imports StableDiffusion)
+# - searxng_get_urls, summarize_content, combine_context, check_relevance,
+#   scrape_url_content: unused in this module (dead imports)
 
 initial_system_status = json_get_instant_system_info()
 
@@ -116,28 +116,82 @@ class MCPClient:
         else:
             print("[MCP] Searx tools not available")
     
-    def call_tool(self, name, arguments):
+    def call_tool(self, name, arguments, session_id=None):
         """Call tool functions directly instead of subprocess"""
-        if not _searx_available:
-            return {"error": "Searx tools not available"}
-        
         try:
             print(f"[MCP] Calling {name} with args: {arguments}")
-            
-            if name == "potatool_web_search_urls":
+
+            if name == "potatool_generate_graph":
+                return self._call_graph_tool(arguments, session_id)
+            elif name == "potatool_web_search_urls":
+                if not _searx_available:
+                    return {"error": "Searx tools not available"}
                 result = potatool_web_search_urls(**arguments)
             elif name == "potatool_extract_content":
+                if not _searx_available:
+                    return {"error": "Searx tools not available"}
                 result = potatool_extract_content(**arguments)
             else:
                 return {"error": f"Unknown tool: {name}"}
-            
+
             print(f"[MCP] Success: {str(result)[:200]}...")
             return result
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()
             return {"error": str(e)}
+
+    def _call_graph_tool(self, arguments, session_id=None):
+        """Handle graph generation tool call."""
+        from POTATO.components.visual_tools.generate_graphs import generate_graph_for_chat
+
+        # Prefer server-provided session_id. If missing, fall back to any
+        # session_id in the tool arguments, otherwise generate a new one.
+        arg_session = session_id or arguments.get('session_id') or str(uuid.uuid4())
+
+        # Sanitize session_id to a safe filename (no ../ or special chars)
+        safe_session = re.sub(r'[^A-Za-z0-9_.-]', '_', str(arg_session))
+        if safe_session != arg_session:
+            print(f"[MCP] Sanitized session_id '{arg_session}' -> '{safe_session}'")
+
+        session_id = safe_session
+
+        # Compute output directory from session_id
+        # Use the POTATO package directory as base so generated files land
+        # in the same `.data/uploads` location served by the web UI.
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(base_dir, '.data', 'uploads', session_id, 'llm-generated')
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Parse data from JSON string if needed
+        data = arguments.get('data')
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        result = generate_graph_for_chat(
+            data=data,
+            graph_type=arguments.get('graph_type', 'bar'),
+            title=arguments.get('title', 'Graph'),
+            x_key=arguments.get('x_key'),
+            y_key=arguments.get('y_key'),
+            x_label=arguments.get('x_label', 'X-axis'),
+            y_label=arguments.get('y_label', 'Y-axis'),
+            output_dir=output_dir
+        )
+
+        if result.get('success'):
+            filename = result['filename']
+            image_url = f"/api/chat_images/{session_id}/{filename}"
+            result['image_url'] = image_url
+            result['markdown'] = f"![Graph: {arguments.get('title', 'Graph')}]({image_url})"
+            full_path = os.path.join(output_dir, filename)
+            if os.path.exists(full_path):
+                print(f"[GRAPH] Generated: {filename} -> {image_url} (saved: {full_path})")
+            else:
+                print(f"[GRAPH] Generated: {filename} -> {image_url} (WARNING: file not found at {full_path})")
+
+        return result
 
 MCP_SCRIPT_PATH = r"POTATO\MCP\searx_mcp.py"
 _mcp_client = MCPClient(MCP_SCRIPT_PATH)
@@ -171,7 +225,31 @@ mcp_tools_schema = [
     }
 ]
 
-def simple_stream_test(messages, model="", enable_search=False, stealth_mode=False, custom_system_prompt="", images=None, keep_alive=600):
+graph_tool_schema = {
+    'type': 'function',
+    'function': {
+        'name': 'potatool_generate_graph',
+        'description': 'Generate a graph/chart from data. Supports: line, bar, scatter, pie, histogram, box, area, heatmap, radar, donut, funnel, waterfall, step, errorbar.',
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'data': {'type': 'string', 'description': 'JSON array of data objects, e.g. [{"month":"Jan","value":100},...]'},
+                'x_key': {'type': 'string', 'description': 'Key for X-axis values'},
+                'y_key': {'type': 'string', 'description': 'Key for Y-axis values'},
+                'graph_type': {'type': 'string', 'enum': ['line', 'bar', 'scatter', 'pie', 'histogram', 'box', 'area', 'heatmap', 'radar', 'donut', 'funnel', 'waterfall', 'step', 'errorbar']},
+                'title': {'type': 'string', 'description': 'Graph title'},
+                'x_label': {'type': 'string', 'description': 'X-axis label'},
+                'y_label': {'type': 'string', 'description': 'Y-axis label'}
+            },
+            'required': ['data', 'graph_type', 'title']
+        }
+    }
+}
+
+# Always-available tools (not search-dependent)
+always_available_tools = [graph_tool_schema]
+
+def simple_stream_test(messages, model="", enable_search=False, stealth_mode=False, custom_system_prompt="", images=None, keep_alive=600, session_id=None):
     """
     Generator that handles the LLM Stream + Tool execution loop with thinking detection.
 
@@ -183,6 +261,7 @@ def simple_stream_test(messages, model="", enable_search=False, stealth_mode=Fal
         stealth_mode: Whether to operate in stealth mode (affects tool selection)
         custom_system_prompt: Optional custom system prompt to prepend to all system context
         images: Optional list of base64-encoded images to include with the last user message
+        session_id: Chat session ID (used for graph tool output directory)
     """
     # Auto-detect tags if this is first time using model
     # This runs BEFORE the actual chat so we have correct tag info
@@ -213,12 +292,14 @@ def simple_stream_test(messages, model="", enable_search=False, stealth_mode=Fal
     custom_prompt_prefix = f"{custom_system_prompt}\n\n---\n\n" if custom_system_prompt else ""
 
     math_instructions = """
-    [MATHS INSTRUCTIONS]
+    [MATHS & CODE INSTRUCTIONS]
     When you include mathematical expressions, always use LaTeX delimiters:
 - Inline math: $...$
 - Display math: $$...$$
-Do NOT put math inside code blocks (```...```) or escape dollar signs. Use \\( \\) or \\[ \\] only if dollar signs must be avoided.
-Keep expressions as raw LaTeX so the UI can render them."""
+DO NOT EVER put maths and/or LaTeX inside markdown code blocks (```) unless SPECIFICALLY ASKED FOR. do NOT escape dollar signs. Use \\( \\) or \\[ \\] only if dollar signs must be avoided.
+Keep expressions as raw LaTeX so the UI can render them.
+ALWAYS put code in code blocks. ALWAYS put commands (terminal, bash, other) in code blocks. However NEVER put LaTeX in code blocks unless STRICTLY NECESSARY or ASKED FOR. ALWAYS output LaTeX as raw text, outside of code blocks UNLESS USER ASKS FOR LATEX CODE BLOCKS.
+"""
 
     web_search_instructions = """You have access to web search tools via Ollama's native tool calling system.
 
@@ -267,14 +348,11 @@ Keep expressions as raw LaTeX so the UI can render them."""
 ALWAYS consider the full conversation history when determining what to search for or how to respond. If history is too long, focus on RECENT messages by user.
 """
     
-    # 2. Inject Rules ONLY if web search is enabled (to avoid conflicting instructions)
-    if enable_search:
-        rules = load_rules()
-        if rules:
-            settings_context += f"\n[OPERATIONAL RULES]{rules}"
-            print(f"[RULES] Loaded {len(rules)} characters of rules")
-        else:
-            print("[RULES] No rules found in rules directory")
+    # 2. Inject Rules (always load for graph tool; search rules only if search enabled)
+    rules = load_rules()
+    if rules:
+        settings_context += f"\n[OPERATIONAL RULES]{rules}"
+        print(f"[RULES] Loaded {len(rules)} characters of rules")
     
     # 3. Update or create system prompt
     sys_idx = next((i for i, m in enumerate(messages) if m['role'] == 'system'), -1)
@@ -285,17 +363,18 @@ ALWAYS consider the full conversation history when determining what to search fo
         # Create new system prompt
         messages.insert(0, {"role": "system", "content": settings_context})
 
-    active_tools = mcp_tools_schema if enable_search else None
-    
-    # Start MCP client if web search is enabled
+    # Always include graph tool; add search tools if enabled
     if enable_search:
+        active_tools = always_available_tools + mcp_tools_schema
         try:
             _mcp_client.start()
             print("[MCP] Client started successfully")
         except Exception as e:
             print(f"[MCP] Failed to start client: {e}")
-            # Continue without tools if MCP fails
-            active_tools = None
+            # Keep graph tools even if MCP fails
+            active_tools = always_available_tools
+    else:
+        active_tools = always_available_tools
     
     # Add images to the last user message if provided
     if images and len(images) > 0:
@@ -536,7 +615,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                         
                         # Call MCP
                         try:
-                            result = _mcp_client.call_tool(fn, args)
+                            result = _mcp_client.call_tool(fn, args, session_id=session_id)
                         except Exception as e:
                             result = {"error": str(e)}
                         
@@ -557,7 +636,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                         
                         # Recursion: Call simple_stream_test() again to handle potential additional tool calls
                         # Don't yield status here - let model decide if more tools needed
-                        sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode)
+                        sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode, session_id=session_id)
                         
                         # Stream sub-response - this will recursively handle MORE tool calls if present
                         for sub in sub_stream:
@@ -610,7 +689,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                                 print(f"[MCP] Calling {fn} with args: {args}")
                                 
                                 try:
-                                    result = _mcp_client.call_tool(fn, args)
+                                    result = _mcp_client.call_tool(fn, args, session_id=session_id)
                                     print(f"[MCP] Result: {str(result)[:300]}")
                                     
                                     # Yield success message
@@ -638,7 +717,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                                 yield {'tool': "📊 Analyzing results..."}
                                 # Recursively handle sub-stream - model might make MORE tool calls!
                                 # Call the same function recursively to handle potential additional tool calls
-                                sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode)
+                                sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode, session_id=session_id)
                                 
                                 for sub in sub_stream:
                                     # Forward all chunks from sub-stream (content, tool, thinking)
@@ -695,7 +774,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                                         yield {'tool': f"🔧 Calling {tool_display_name}...", 'tool_name': fn, 'tool_args': args}
                                         print(f"[MCP] Calling {fn} with args: {args}")
                                         try:
-                                            result = _mcp_client.call_tool(fn, args)
+                                            result = _mcp_client.call_tool(fn, args, session_id=session_id)
                                             yield {'tool': f"✓ {tool_display_name} completed", 'tool_result': str(result)[:100]}
                                             if isinstance(result, dict) and 'error' in result:
                                                 continue
@@ -706,7 +785,7 @@ ALWAYS consider the full conversation history when determining what to search fo
                                         messages.append({'role': 'tool', 'content': json.dumps(result), 'name': fn})
                                     if messages and messages[-1].get('role') == 'tool':
                                         yield {'tool': "📊 Analyzing results..."}
-                                        sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode)
+                                        sub_stream = simple_stream_test(messages, model=model, enable_search=enable_search, stealth_mode=stealth_mode, session_id=session_id)
                                         for sub in sub_stream:
                                             if 'content' in sub:
                                                 final_content += sub['content']

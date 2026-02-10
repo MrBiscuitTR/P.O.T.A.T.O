@@ -4,13 +4,14 @@ description: "Use the Searx Web Search MCP server for all web-related tasks to e
 alwaysApply: true
 ---
 
-# Use these tools only if the last prompt has web search enabled. Otherwise DO NOT ATTEMPT.
+# Use these tools only if the last prompt has web search enabled. Otherwise DO NOT ATTEMPT
 
 ## **CRITICAL: ACTUALLY CALL THE TOOLS**
 
 **DO NOT just think or talk about calling tools - MAKE THE ACTUAL FUNCTION CALL.**
 
-When you determine that a web search is needed:
+*When you determine that a web search is needed:*
+
 - **STOP generating text**
 - **IMMEDIATELY call potatool_web_search_urls with your query**  
 - **DO NOT say** "I will search" or "Let me search" or "Searching for..."
@@ -33,6 +34,7 @@ Always use the **Searx Web Search** MCP server for any web-related tasks, includ
 IF you have urls in your context, but not meaningful content, therefore if you are unable to answer user's question using up to date information/documentation, use the potatool_extract_content tool on the urls you have. then generate your answer.
 
 ### MCP Server Tools
+
 The MCP server provides two tools:
 
 1. **potatool_web_search_urls**  
@@ -46,16 +48,18 @@ The MCP server provides two tools:
 2. **potatool_extract_content**  
    - Use this when you need to read or understand the full readable content of a specific page.  
    - Input: a single URL from the search results (or any URL you already know).  
-   - Returns: human-readable text with preserved links (<a href="...">some text</a>) and simplified HTML tables (<table><tr><th><td>...</td></th></tr></table>).  
+   - Returns: human-readable text with preserved links (```<a href="Additional urls discovered here">probable description of linked page, check for relevance.</a>```) and simplified HTML tables (```<table><tr><th><td>...</td></th></tr></table>```).  
    - All other HTML is flattened to clean text with appropriate newlines for paragraphs, headings, lists, code blocks, etc.  
    - Perfect for feeding detailed documentation, READMEs, issue threads, or articles to the model.
    - Do NOT use on youtube videos or similar non-text content. Dont use on any url that you suspect has only a video or videos on it.
+   - You can use this on localhost URLs and APIs as well, if user asks for it or if you are instructed to do so specifically.
 
 *Do NOT start streaming your final response until all tool calls have been completed.*
 *Do NOT stream tool calls as part of your final response.*
 *Do not output TOOL_CALLS in your streaming response.*
 
 ## Workflow:
+
 1. **Autonomously determine** what search query you need (2-5 words, focused)
 2. Call 'potatool_web_search_urls' tool with your determined query
 3. Filter out irrelevant results based on title and preview content. Do NOT include intermediary steps in your response
@@ -64,6 +68,8 @@ The MCP server provides two tools:
 6. If you feel its necessary, you can also extract the contents of the relevant URLs found in a href tags in extracted contents
 7. Use the final extracted content to answer the question accurately
 8. Generate final answer using the acquired web context and all other context. Briefly mention what you searched for
-8. Return to the original prompt and finalize your response.
+9. Return to the original prompt and finalize your response.
 
-Always use potatool_extract_content tool on AT LEAST one relevant url.
+Always use potatool_extract_content tool on AT LEAST one relevant url if you already called 'potatool_web_search_urls'.
+*you CAN use multiple URLs from the same 'potatool_web_search_urls' result with 'potatool_extract_content' tool one after another if you think the yare all relevant. yo don't need to use 'potatool_web_search_urls' every single time you want to extract new content.*
+**You may use the links you find inside a href tags after using 'potatool_extract_content' on a url, as a parameter for another 'potatool_extract_content' call, if you think its content will be useful for your response. Do not do this recursively for a depth of more than 2.**

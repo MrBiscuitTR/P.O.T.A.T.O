@@ -264,6 +264,18 @@
               </div>
 
               <div class="vox-setting">
+                <label>Voice:</label>
+                <div class="vox-chat-selector-row">
+                  <select id="vox-voice-select" onchange="setVoiceSelection(this.value)">
+                    <option value="">Default Voice</option>
+                  </select>
+                  <button class="vox-delete-btn" onclick="uploadVoiceFile()" title="Upload a custom voice file (.wav/.mp3, max 2.5MB)">
+                    <i class="fas fa-upload"></i>
+                  </button>
+                </div>
+              </div>
+
+              <div class="vox-setting">
                 <label>VOX Model:</label>
                 <select id="vox-model-select" onchange="setVOXModel(this.value)">
                   <option value="">Loading...</option>

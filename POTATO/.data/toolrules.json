@@ -11,5 +11,11 @@
     "requires_web_search": false,
     "requires_stealth_mode": false,
     "description": "On-demand retrieval of relevant document snippets from the vector DB (Weaviate)"
+  },
+  "GENERATE_GRAPHS.md": {
+    "tools": ["potatool_generate_graph"],
+    "requires_web_search": false,
+    "requires_stealth_mode": false,
+    "description": "Generate charts and graphs from data"
   }
 }

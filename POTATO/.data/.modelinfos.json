@@ -216,5 +216,8 @@
     "supports_streaming_thinking": false,
     "detection_notes": "Using safe defaults (no tags)",
     "detection_date": "2026-02-09T19:37:59.756400"
+  },
+  "dengcao/Qwen3-30B-A3B-Instruct-2507:Q4_K_M": {
+    "vision": false
   }
 }
