@@ -35,6 +35,10 @@ body {
   height: 100vh;
   overflow: hidden;
   position: relative;
+  /* Prevent iOS rubber-band / bounce scroll */
+  overscroll-behavior: none;
+  -webkit-overflow-scrolling: auto;
+  touch-action: pan-x pan-y;
 }
 
 /* --- Sci-Fi Effects --- */
@@ -61,6 +65,8 @@ body {
   height: 100vh;
   border: 1px solid var(--border-color);
   position: relative;
+  /* Prevent iOS bounce on the app root */
+  overscroll-behavior: none;
 }
 
 /* --- Sidebar Base --- */
@@ -2320,6 +2326,21 @@ body {
   }
 }
 
+/* --- TOUCH DEVICE: PREVENT INPUT ZOOM & BOUNCE --- */
+@media (hover: none) and (pointer: coarse) {
+  /* iOS requires font-size >= 16px to suppress auto-zoom on focus */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important; /*prevent mobile zoom ios*/
+  }
+
+  /* Contain scroll within each scrollable panel; prevent bounce leaking to body */
+  * {
+    overscroll-behavior: contain;
+  }
+}
+
 /* --- DISABLE HOVER EFFECTS ON TOUCH DEVICES --- */
 @media (hover: none) and (pointer: coarse) {
   /* Disable all hover effects on touch devices */
@@ -2742,14 +2763,18 @@ html, body {
   font-size: 0.9em;
 }
 
+.code-block-wrapper {
+  position: relative;
+  margin: 10px 0;
+}
+
 .markdown-content pre {
   background: #1a1a1a;
   border: 1px solid var(--border-color);
   border-radius: 5px;
   padding: 15px;
-  margin: 10px 0;
+  margin: 0;
   overflow-x: auto;
-  position: relative;
 }
 
 .markdown-content pre code {
@@ -2861,6 +2886,8 @@ html, body {
   opacity: 0.7;
   transition: all 0.2s;
   z-index: 10;
+  /* Stays in wrapper corner, never scrolls with the code */
+  pointer-events: auto;
 }
 
 .copy-btn:hover {

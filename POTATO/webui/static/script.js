@@ -1710,16 +1710,24 @@ function renderMarkdown(element, text) {
         })(element);
         
         // Add copy buttons to code blocks
+        // The button lives in a wrapper div (not inside the scrolling <pre>)
+        // so it stays pinned to the corner even when the code scrolls horizontally.
         element.querySelectorAll('pre code').forEach((block) => {
-            if (!block.parentElement.querySelector('.copy-btn')) {
-                const button = document.createElement('button');
-                button.className = 'copy-btn';
-                button.innerHTML = '<i class="fas fa-copy"></i>';
-                button.title = 'Copy code';
-                button.onclick = () => copyCode(button, block);
-                block.parentElement.style.position = 'relative';
-                block.parentElement.insertBefore(button, block);
-            }
+            const pre = block.parentElement;
+            if (pre.parentElement && pre.parentElement.classList.contains('code-block-wrapper')) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'code-block-wrapper';
+
+            const button = document.createElement('button');
+            button.className = 'copy-btn';
+            button.innerHTML = '<i class="fas fa-copy"></i>';
+            button.title = 'Copy code';
+            button.onclick = () => copyCode(button, block);
+
+            pre.parentElement.insertBefore(wrapper, pre);
+            wrapper.appendChild(pre);
+            wrapper.appendChild(button);
         });
         
         // Post-process images: add error handling and click-to-expand
@@ -4422,3 +4430,76 @@ async function confirmDeleteChat(chatId, chatTitle, isVoiceChat) {
         }
     );
 }
+
+// =============================================================================
+// iOS PWA BOUNCE / SCROLL LOCK
+// Prevents the entire app from sliding up and down when touching non-scrollable
+// areas or when a scrollable element has reached its boundary.
+// =============================================================================
+(function () {
+    function isVerticallyScrollable(el) {
+        if (!el || el === document.body || el === document.documentElement) return false;
+        var ov = window.getComputedStyle(el).overflowY;
+        return (ov === 'auto' || ov === 'scroll') && el.scrollHeight > el.clientHeight;
+    }
+
+    function isHorizontallyScrollable(el) {
+        if (!el || el === document.body || el === document.documentElement) return false;
+        var ov = window.getComputedStyle(el).overflowX;
+        return (ov === 'auto' || ov === 'scroll') && el.scrollWidth > el.clientWidth;
+    }
+
+    function findVerticalScrollableParent(el) {
+        while (el && el !== document.body) {
+            if (isVerticallyScrollable(el)) return el;
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    function findHorizontalScrollableParent(el) {
+        while (el && el !== document.body) {
+            if (isHorizontallyScrollable(el)) return el;
+            el = el.parentElement;
+        }
+        return null;
+    }
+
+    var startX = 0;
+    var startY = 0;
+
+    document.addEventListener('touchstart', function (e) {
+        startX = e.touches[0].clientX;
+        startY = e.touches[0].clientY;
+    }, { passive: true });
+
+    document.addEventListener('touchmove', function (e) {
+        var dx = Math.abs(e.touches[0].clientX - startX);
+        var dy = Math.abs(e.touches[0].clientY - startY);
+
+        if (dx > dy) {
+            // Primarily horizontal gesture — only allow it if inside a real horizontal scroller.
+            // Block everything else (prevents diagonal drift from causing page bounce).
+            if (!findHorizontalScrollableParent(e.target)) {
+                e.preventDefault();
+            }
+            return;
+        }
+
+        // Primarily vertical gesture — block unless inside a vertical scroller with room to scroll.
+        var scrollable = findVerticalScrollableParent(e.target);
+
+        if (!scrollable) {
+            e.preventDefault();
+            return;
+        }
+
+        var rawDy = e.touches[0].clientY - startY;
+        var atTop    = scrollable.scrollTop <= 0;
+        var atBottom = scrollable.scrollTop + scrollable.clientHeight >= scrollable.scrollHeight - 1;
+
+        if ((atTop && rawDy > 0) || (atBottom && rawDy < 0)) {
+            e.preventDefault();
+        }
+    }, { passive: false });
+})();

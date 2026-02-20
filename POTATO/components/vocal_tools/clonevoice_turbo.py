@@ -1,4 +1,12 @@
-"""Supports: [clear throat][sigh][shush][cough][groan][sniff][gasp][chuckle][laugh]"""
+"""Supports: [clear throat]
+[sigh]
+[shush]
+[cough]
+[groan]
+[sniff]
+[gasp]
+[chuckle]
+[laugh]"""
 
 """
 Chatterbox-Turbo - Fully offline, real-time sentence-by-sentence TTS
@@ -52,7 +60,7 @@ TEMP_DIR.mkdir(exist_ok=True)
 SAMPLES_DIR = SCRIPT_DIR / "samples"
 SAMPLES_DIR.mkdir(exist_ok=True)
 
-AUDIO_PROMPT_PATH = SAMPLES_DIR / "Wheatley.wav"
+AUDIO_PROMPT_PATH = SAMPLES_DIR / "sample1cagan.wav"
 
 if not AUDIO_PROMPT_PATH.is_file():
     print(f"Note: No reference audio at {AUDIO_PROMPT_PATH}")
